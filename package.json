@@ -1,0 +1,26 @@
+{
+  "name": "privypdf-redactor-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-only PDF redaction app for GitHub Pages.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "jspdf": "^3.0.3",
+    "pdfjs-dist": "^5.4.394",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "vite": "^7.1.9"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "typescript": "^5.9.3"
+  }
+}
+
