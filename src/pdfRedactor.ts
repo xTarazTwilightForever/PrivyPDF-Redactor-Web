@@ -1,6 +1,6 @@
 import jsPDF from "jspdf";
-import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import type { RedactionRule, Validator } from "./rules";
 import { agePattern, emailPattern, phonePattern } from "./rules";
 
@@ -50,6 +50,19 @@ type TextSpan = {
 type PdfPageProxy = Awaited<ReturnType<Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>["getPage"]>>;
 
 const renderScale = 2;
+const sectionHeadingWords = [
+  "demographics",
+  "experience",
+  "section",
+  "participant's",
+  "participants",
+  "participant",
+  "question",
+  "questions",
+  "required",
+  "study",
+  "form"
+];
 
 export function normalizeText(text: string): string {
   return text
@@ -93,8 +106,12 @@ function isLabelLine(text: string, labels: string[]): boolean {
 
 function isNameValue(text: string): boolean {
   const clean = text.trim();
+  const normalized = normalizeText(clean);
   if (!clean || emailPattern.test(clean)) return false;
   if (isQuestionNumber(clean) || isFooterOrHeader(clean)) return false;
+  if (clean.includes("'s") || clean.includes("’s")) return false;
+  if (/\band\b/i.test(clean)) return false;
+  if (sectionHeadingWords.some((word) => normalized.includes(word))) return false;
   if (/\d/.test(clean) || clean.length > 80) return false;
 
   const parts = clean.split(/\s+/).filter(Boolean);

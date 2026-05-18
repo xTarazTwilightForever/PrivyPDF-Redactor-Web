@@ -150,13 +150,15 @@ small {
 .file-panel,
 .run-panel {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
   align-items: center;
   gap: 18px;
+  overflow: hidden;
 }
 
 .upload-zone {
-  min-width: min(360px, 100%);
+  width: 100%;
+  min-width: 0;
   border: 1px dashed #9aa8bf;
   border-radius: 8px;
   padding: 18px;
@@ -311,9 +313,12 @@ pre {
 
 @media (max-width: 860px) {
   .app-header,
-  .file-panel,
   .run-panel,
   .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .file-panel {
     grid-template-columns: 1fr;
   }
 
@@ -323,4 +328,3 @@ pre {
     width: 100%;
   }
 }
-
