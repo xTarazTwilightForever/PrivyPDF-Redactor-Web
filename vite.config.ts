@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   base: "/PrivyPDF-Redactor-Web/",
-  plugins: [react()]
+  plugins: [react()],
+  build: {
+    target: "es2020"
+  }
 });
-

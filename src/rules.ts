@@ -11,7 +11,7 @@ export type RedactionRule = {
 };
 
 export const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
-export const phonePattern = /(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)/;
+export const phonePattern = /(?:\+?\d[\d\s().-]{7,}\d)/;
 export const agePattern = /\b(?:[1-9][0-9]?|1[01][0-9]|120)\b/;
 
 export const defaultRules: RedactionRule[] = [
@@ -86,4 +86,3 @@ export const defaultRules: RedactionRule[] = [
     ]
   }
 ];
-

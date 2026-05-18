@@ -54,8 +54,8 @@ const renderScale = 2;
 export function normalizeText(text: string): string {
   return text
     .toLowerCase()
-    .replaceAll("*", " ")
-    .replaceAll("’", "'")
+    .replace(/\*/g, " ")
+    .replace(/’/g, "'")
     .replace(/[^a-z0-9@._+\-'\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -220,17 +220,21 @@ function detectGlobalPatterns(spans: TextSpan[], rules: RedactionRule[], options
 }
 
 function detectCustomValues(spans: TextSpan[], options: ProcessOptions): RedactionHit[] {
-  return spans.flatMap((span) => {
+  const hits: RedactionHit[] = [];
+  for (const span of spans) {
     const cleanSpan = normalizeText(span.text);
-    return options.customValues
-      .filter((value) => value.trim() && cleanSpan.includes(normalizeText(value)))
-      .map((value) => ({
+    for (const value of options.customValues) {
+      if (value.trim() && cleanSpan.includes(normalizeText(value))) {
+        hits.push({
         pageIndex: span.pageIndex,
         rect: padRect(span.rect, options.padding),
         reason: "custom",
         text: value
-      }));
-  });
+        });
+      }
+    }
+  }
+  return hits;
 }
 
 function dedupeHits(hits: RedactionHit[]): RedactionHit[] {
@@ -331,4 +335,3 @@ export async function redactPdfFile(
     hits
   };
 }
-
