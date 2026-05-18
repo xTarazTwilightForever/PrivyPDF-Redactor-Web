@@ -26,6 +26,7 @@ export type ProcessOptions = {
   allEmails: boolean;
   allRegex: boolean;
   padding: number;
+  debug?: DebugLogger;
 };
 
 export type ProcessProgress = {
@@ -41,6 +42,23 @@ export type ProcessResult = {
   hits: RedactionHit[];
 };
 
+export type FieldAnalysis = {
+  key: string;
+  title: string;
+  labels: string[];
+  samples: string[];
+  count: number;
+};
+
+export type DocumentAnalysis = {
+  fields: FieldAnalysis[];
+  suggestedLabels: string[];
+  pageCount: number;
+  spanCount: number;
+};
+
+export type DebugLogger = (message: string, details?: unknown) => void;
+
 type TextSpan = {
   pageIndex: number;
   text: string;
@@ -50,6 +68,7 @@ type TextSpan = {
 type PdfPageProxy = Awaited<ReturnType<Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>["getPage"]>>;
 
 const renderScale = 2;
+const maxFieldAnswerDistance = 95;
 const sectionHeadingWords = [
   "demographics",
   "experience",
@@ -63,6 +82,29 @@ const sectionHeadingWords = [
   "study",
   "form"
 ];
+
+function debugLog(logger: DebugLogger | undefined, message: string, details?: unknown): void {
+  if (logger) {
+    logger(message, details);
+  }
+  if (details === undefined) {
+    console.debug(`[PrivyPDF] ${message}`);
+  } else {
+    console.debug(`[PrivyPDF] ${message}`, details);
+  }
+}
+
+function isSafariBrowser(): boolean {
+  return /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
+}
+
+function pdfDocumentParams(data: ArrayBuffer, disableWorker: boolean): Record<string, unknown> {
+  const params: Record<string, unknown> = { data };
+  if (disableWorker) {
+    params.disableWorker = true;
+  }
+  return params;
+}
 
 export function normalizeText(text: string): string {
   return text
@@ -89,6 +131,23 @@ function isFooterOrHeader(text: string): boolean {
   );
 }
 
+function isLikelyFieldLabelText(text: string): boolean {
+  const clean = text.trim();
+  const normalized = normalizeText(clean);
+  if (!clean || isFooterOrHeader(clean) || isQuestionNumber(clean)) return false;
+  if (clean.length > 120) return false;
+  return clean.includes("*") || clean.endsWith("?") || normalized.includes("email") || normalized.includes("name");
+}
+
+function isSectionHeadingText(text: string): boolean {
+  const clean = text.trim();
+  const normalized = normalizeText(clean);
+  if (!clean) return false;
+  if (clean.includes("'s") || clean.includes("’s")) return true;
+  if (/\band\b/i.test(clean)) return true;
+  return sectionHeadingWords.some((word) => normalized.includes(word));
+}
+
 function isLabelLine(text: string, labels: string[]): boolean {
   const clean = normalizeText(text);
   if (!clean) return false;
@@ -109,9 +168,7 @@ function isNameValue(text: string): boolean {
   const normalized = normalizeText(clean);
   if (!clean || emailPattern.test(clean)) return false;
   if (isQuestionNumber(clean) || isFooterOrHeader(clean)) return false;
-  if (clean.includes("'s") || clean.includes("’s")) return false;
-  if (/\band\b/i.test(clean)) return false;
-  if (sectionHeadingWords.some((word) => normalized.includes(word))) return false;
+  if (isSectionHeadingText(clean)) return false;
   if (/\d/.test(clean) || clean.length > 80) return false;
 
   const parts = clean.split(/\s+/).filter(Boolean);
@@ -121,6 +178,8 @@ function isNameValue(text: string): boolean {
 function matchesValidator(text: string, validator: Validator, regex?: RegExp): boolean {
   const clean = text.trim();
   if (isFooterOrHeader(clean)) return false;
+  if (validator !== "free_text" && isLikelyFieldLabelText(clean)) return false;
+  if (isSectionHeadingText(clean)) return false;
   if (validator === "age" && /^\d{1,3}\.$/.test(clean)) return false;
   if (validator !== "age" && isQuestionNumber(clean)) return false;
 
@@ -180,31 +239,83 @@ async function extractTextSpans(pdf: pdfjsLib.PDFDocumentProxy): Promise<TextSpa
   return spans;
 }
 
+function findValueAfterLabel(labelSpan: TextSpan, spans: TextSpan[], rule: RedactionRule): TextSpan | undefined {
+  const candidates = spans
+    .filter((candidate) => {
+      if (candidate.pageIndex !== labelSpan.pageIndex) return false;
+      if (candidate === labelSpan) return false;
+      if (candidate.rect.y <= labelSpan.rect.y) return false;
+      const yDistance = candidate.rect.y - labelSpan.rect.y;
+      if (yDistance > maxFieldAnswerDistance) return false;
+      if (isLikelyFieldLabelText(candidate.text)) return false;
+      return matchesValidator(candidate.text, rule.validator, rule.regex);
+    })
+    .sort((a, b) => {
+      const yDelta = a.rect.y - labelSpan.rect.y - (b.rect.y - labelSpan.rect.y);
+      if (Math.abs(yDelta) > 2) return yDelta;
+      return Math.abs(a.rect.x - labelSpan.rect.x) - Math.abs(b.rect.x - labelSpan.rect.x);
+    });
+
+  return candidates[0];
+}
+
+function analyzeFields(spans: TextSpan[], rules: RedactionRule[]): FieldAnalysis[] {
+  return rules.map((rule) => {
+    const labels = spans.filter((span) => isLabelLine(span.text, rule.labels));
+    const values = labels
+      .map((label) => findValueAfterLabel(label, spans, rule))
+      .filter((value): value is TextSpan => Boolean(value));
+    const uniqueLabels = [...new Set(labels.map((label) => label.text.trim()))];
+    const uniqueSamples = [...new Set(values.map((value) => value.text.trim()))].slice(0, 3);
+    return {
+      key: rule.key,
+      title: rule.title,
+      labels: uniqueLabels,
+      samples: uniqueSamples,
+      count: values.length
+    };
+  });
+}
+
+function collectSuggestedLabels(spans: TextSpan[], rules: RedactionRule[]): string[] {
+  const knownLabels = new Set<string>();
+  for (const rule of rules) {
+    for (const label of rule.labels) {
+      knownLabels.add(normalizeText(label));
+    }
+  }
+  return [
+    ...new Set(
+      spans
+        .map((span) => span.text.trim())
+        .filter((text) => isLikelyFieldLabelText(text))
+        .filter((text) => !knownLabels.has(normalizeText(text)))
+    )
+  ].slice(0, 12);
+}
+
 function detectLabelValues(spans: TextSpan[], rules: RedactionRule[], options: ProcessOptions): RedactionHit[] {
   const selected = new Set(options.selectedKeys);
   const hits: RedactionHit[] = [];
 
   for (const rule of rules) {
     if (!selected.has(rule.key)) continue;
+    const labels = spans.filter((span) => isLabelLine(span.text, rule.labels));
+    debugLog(options.debug, `Rule "${rule.key}" matched ${labels.length} label(s).`, labels.map((label) => label.text));
 
-    for (let index = 0; index < spans.length; index += 1) {
-      const labelSpan = spans[index];
-      if (!isLabelLine(labelSpan.text, rule.labels)) continue;
-
-      const candidates = spans.slice(index + 1, index + 11);
-      const value = candidates.find(
-        (candidate) =>
-          candidate.pageIndex === labelSpan.pageIndex &&
-          matchesValidator(candidate.text, rule.validator, rule.regex)
-      );
+    for (const labelSpan of labels) {
+      const value = findValueAfterLabel(labelSpan, spans, rule);
 
       if (value) {
+        debugLog(options.debug, `Rule "${rule.key}" selected value after "${labelSpan.text}".`, value.text);
         hits.push({
           pageIndex: value.pageIndex,
           rect: padRect(value.rect, options.padding),
           reason: rule.key,
           text: value.text
         });
+      } else {
+        debugLog(options.debug, `Rule "${rule.key}" did not find a safe answer after "${labelSpan.text}".`);
       }
     }
   }
@@ -309,15 +420,19 @@ export async function redactPdfFile(
   onProgress: (progress: ProcessProgress) => void
 ): Promise<ProcessResult> {
   const data = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data }).promise;
+  const disableWorker = isSafariBrowser();
+  debugLog(options.debug, `Loading PDF "${file.name}".`, { disableWorker, bytes: data.byteLength });
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(data, disableWorker) as never).promise;
   onProgress({ page: 0, totalPages: pdf.numPages, message: "Reading text" });
 
   const spans = await extractTextSpans(pdf);
+  debugLog(options.debug, `Extracted ${spans.length} text span(s).`);
   const hits = dedupeHits([
     ...detectLabelValues(spans, rules, options),
     ...detectGlobalPatterns(spans, rules, options),
     ...detectCustomValues(spans, options)
   ]);
+  debugLog(options.debug, `Detected ${hits.length} redaction box(es).`, hits.map((hit) => ({ reason: hit.reason, text: hit.text })));
 
   let outputPdf: jsPDF | null = null;
 
@@ -351,4 +466,55 @@ export async function redactPdfFile(
     blob,
     hits
   };
+}
+
+export async function analyzePdfFiles(
+  files: File[],
+  rules: RedactionRule[],
+  debug?: DebugLogger
+): Promise<DocumentAnalysis> {
+  const fields = new Map<string, FieldAnalysis>();
+  const suggested = new Set<string>();
+  let pageCount = 0;
+  let spanCount = 0;
+
+  for (const file of files) {
+    const data = await file.arrayBuffer();
+    const disableWorker = isSafariBrowser();
+    debugLog(debug, `Analyzing PDF "${file.name}".`, { disableWorker, bytes: data.byteLength });
+    const pdf = await pdfjsLib.getDocument(pdfDocumentParams(data, disableWorker) as never).promise;
+    const spans = await extractTextSpans(pdf);
+    pageCount += pdf.numPages;
+    spanCount += spans.length;
+
+    for (const item of analyzeFields(spans, rules)) {
+      const previous = fields.get(item.key);
+      if (!previous) {
+        fields.set(item.key, item);
+      } else {
+        previous.count += item.count;
+        previous.labels = [...new Set([...previous.labels, ...item.labels])];
+        previous.samples = [...new Set([...previous.samples, ...item.samples])].slice(0, 3);
+      }
+    }
+
+    for (const label of collectSuggestedLabels(spans, rules)) {
+      suggested.add(label);
+    }
+  }
+
+  const result = {
+    fields: rules.map((rule) => fields.get(rule.key) ?? {
+      key: rule.key,
+      title: rule.title,
+      labels: [],
+      samples: [],
+      count: 0
+    }),
+    suggestedLabels: [...suggested].slice(0, 12),
+    pageCount,
+    spanCount
+  };
+  debugLog(debug, "Document analysis complete.", result);
+  return result;
 }

@@ -159,6 +159,9 @@ small {
 .upload-zone {
   width: 100%;
   min-width: 0;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
   border: 1px dashed #9aa8bf;
   border-radius: 8px;
   padding: 18px;
@@ -170,9 +173,30 @@ small {
   display: none;
 }
 
-.upload-zone span {
-  display: block;
+.upload-button {
+  border-color: transparent;
+  color: var(--accent);
   font-weight: 800;
+}
+
+.upload-button:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid rgba(23, 92, 211, 0.32);
+  outline-offset: 2px;
+}
+
+.upload-zone:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(23, 92, 211, 0.12);
+}
+
+.upload-zone small {
+  overflow-wrap: anywhere;
+}
+
+.upload-zone span {
   color: var(--accent);
 }
 
@@ -220,6 +244,26 @@ small {
   width: auto;
   min-height: auto;
   margin-top: 4px;
+}
+
+.rule-card.is-disabled {
+  opacity: 0.58;
+  background: #f8fafc;
+}
+
+.detected-text {
+  margin-top: 6px;
+  color: var(--success);
+}
+
+.sample-text {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.suggestion-text {
+  margin-top: 14px;
+  font-size: 0.92rem;
 }
 
 .rule-card strong,
@@ -309,6 +353,12 @@ pre {
   font-size: 0.86rem;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.app-footer {
+  padding: 18px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 @media (max-width: 860px) {

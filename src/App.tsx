@@ -1,6 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { defaultRules, type RedactionRule, type Validator } from "./rules";
-import { redactPdfFile, type ProcessProgress, type ProcessResult } from "./pdfRedactor";
+import {
+  analyzePdfFiles,
+  redactPdfFile,
+  type FieldAnalysis,
+  type DocumentAnalysis,
+  type ProcessProgress,
+  type ProcessResult
+} from "./pdfRedactor";
 
 type CustomFieldDraft = {
   title: string;
@@ -50,7 +57,17 @@ function downloadBlob(blob: Blob, fileName: string): void {
   URL.revokeObjectURL(url);
 }
 
+function debugLine(message: string, details?: unknown): string {
+  if (details === undefined) return message;
+  try {
+    return `${message} ${JSON.stringify(details)}`;
+  } catch {
+    return message;
+  }
+}
+
 export default function App() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [rules, setRules] = useState<RedactionRule[]>(defaultRules);
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(defaultRules.filter((rule) => rule.enabledByDefault).map((rule) => rule.key))
@@ -69,18 +86,90 @@ export default function App() {
   const [progress, setProgress] = useState<ProcessProgress | null>(null);
   const [results, setResults] = useState<ProcessResult[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
+  const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState("Attach PDFs to inspect available fields.");
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const selectedCount = selected.size;
   const canRun = files.length > 0 && selectedCount > 0 && !isRunning;
+  const availabilityByKey = useMemo(
+    () => new Map((analysis?.fields ?? []).map((field) => [field.key, field])),
+    [analysis]
+  );
 
   const totalHits = useMemo(
     () => results.reduce((total, result) => total + result.hits.length, 0),
     [results]
   );
 
+  function log(message: string, details?: unknown): void {
+    const line = debugLine(message, details);
+    console.debug(`[PrivyPDF] ${message}`, details ?? "");
+    setLogs((current) => [...current, line]);
+  }
+
+  useEffect(() => {
+    if (files.length === 0) {
+      setAnalysis(null);
+      setAnalysisStatus("Attach PDFs to inspect available fields.");
+      return;
+    }
+
+    let cancelled = false;
+    setAnalysisStatus("Reading document fields...");
+    setError(null);
+
+    analyzePdfFiles(files, rules, (message, details) => {
+      console.debug(`[PrivyPDF] ${message}`, details ?? "");
+    })
+      .then((nextAnalysis) => {
+        if (cancelled) return;
+        setAnalysis(nextAnalysis);
+        const availableDefaults = nextAnalysis.fields
+          .filter((field) => field.count > 0)
+          .map((field) => field.key);
+        setSelected((current) => {
+          const retained = [...current].filter((key) => availableDefaults.includes(key));
+          return new Set(retained.length > 0 ? retained : availableDefaults);
+        });
+        setAnalysisStatus(
+          `Found ${nextAnalysis.fields.filter((field) => field.count > 0).length} supported field type(s), ${nextAnalysis.spanCount} text item(s).`
+        );
+        const found = nextAnalysis.fields
+          .filter((field) => field.count > 0)
+          .map((field) => `${field.title}: ${field.labels.join(", ")}`);
+        const missingDefaults = rules
+          .filter((rule) => rule.enabledByDefault)
+          .filter((rule) => (nextAnalysis.fields.find((field) => field.key === rule.key)?.count ?? 0) === 0)
+          .map((rule) => rule.title);
+        const nextLogs = [
+          `Inspection complete: ${nextAnalysis.pageCount} page(s), ${nextAnalysis.spanCount} text item(s).`,
+          found.length > 0 ? `Available fields: ${found.join(" | ")}` : "No built-in fields were found.",
+          ...missingDefaults.map((title) => `${title} not found in this PDF.`)
+        ];
+        if (nextAnalysis.suggestedLabels.length > 0) {
+          nextLogs.push(`Other possible labels: ${nextAnalysis.suggestedLabels.join(", ")}. Add one in Add Field if it should be hidden.`);
+        }
+        setLogs(nextLogs);
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        const message = caught instanceof Error ? caught.message : "Could not inspect this PDF.";
+        setAnalysis(null);
+        setAnalysisStatus("Could not inspect fields.");
+        setError(message);
+        log("Field inspection failed.", { message });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [files, rules]);
+
   function toggleRule(key: string): void {
+    const field = availabilityByKey.get(key);
+    if (files.length > 0 && field && field.count === 0) return;
     setSelected((current) => {
       const next = new Set(current);
       if (next.has(key)) {
@@ -93,11 +182,18 @@ export default function App() {
   }
 
   function selectDefaults(): void {
-    setSelected(new Set(rules.filter((rule) => rule.enabledByDefault).map((rule) => rule.key)));
+    const keys = rules
+      .filter((rule) => rule.enabledByDefault)
+      .filter((rule) => files.length === 0 || (availabilityByKey.get(rule.key)?.count ?? 0) > 0)
+      .map((rule) => rule.key);
+    setSelected(new Set(keys));
   }
 
   function selectAll(): void {
-    setSelected(new Set(rules.map((rule) => rule.key)));
+    const keys = rules
+      .filter((rule) => files.length === 0 || (availabilityByKey.get(rule.key)?.count ?? 0) > 0)
+      .map((rule) => rule.key);
+    setSelected(new Set(keys));
   }
 
   function clearSelection(): void {
@@ -137,8 +233,28 @@ export default function App() {
     setError(null);
     setResults([]);
     setLogs([]);
+    console.groupCollapsed("[PrivyPDF] Redaction run");
+    console.debug("[PrivyPDF] Files", files.map((file) => ({ name: file.name, size: file.size })));
+    console.debug("[PrivyPDF] Selected fields", [...selected]);
 
     try {
+      if (analysis) {
+        const missing: FieldAnalysis[] = [];
+        for (const key of selected) {
+          const field = availabilityByKey.get(key);
+          if (field && field.count === 0) {
+            missing.push(field);
+          }
+        }
+        for (const field of missing) {
+          log(`${field.title} not found in the uploaded PDF.`);
+        }
+        const suggestions = analysis.suggestedLabels.filter(Boolean);
+        if (suggestions.length > 0) {
+          log(`Other possible PDF labels detected: ${suggestions.join(", ")}. Add one in Add Field if it should be hidden.`);
+        }
+      }
+
       const processed: ProcessResult[] = [];
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
@@ -152,9 +268,13 @@ export default function App() {
             customValues: splitCsv(customValues),
             allEmails,
             allRegex,
-            padding
+            padding,
+            debug: (message, details) => log(message, details)
           },
-          (nextProgress) => setProgress(nextProgress)
+          (nextProgress) => {
+            setProgress(nextProgress);
+            console.debug("[PrivyPDF] Progress", nextProgress);
+          }
         );
 
         processed.push(result);
@@ -163,8 +283,12 @@ export default function App() {
       }
       setProgress(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Something went wrong while processing the PDF.");
+      const message = caught instanceof Error ? caught.message : "Something went wrong while processing the PDF.";
+      console.error("[PrivyPDF] Redaction failed", caught);
+      setError(message);
+      log(`Error: ${message}`);
     } finally {
+      console.groupEnd();
       setIsRunning(false);
     }
   }
@@ -191,16 +315,23 @@ export default function App() {
           <h2>PDF Files</h2>
           <p>Select one or more PDFs. Results keep the original name with a redacted suffix.</p>
         </div>
-        <label className="upload-zone">
+        <div className="upload-zone">
           <input
+            ref={fileInputRef}
             type="file"
             accept="application/pdf,.pdf"
             multiple
             onChange={(event) => setFiles(Array.from(event.currentTarget.files ?? []))}
           />
-          <span>Choose PDF files</span>
+          <button
+            type="button"
+            className="upload-button"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Choose PDF files
+          </button>
           <small>{files.length > 0 ? `${files.length} file(s) ready` : "Drop-in browser workflow for GitHub Pages"}</small>
-        </label>
+        </div>
       </section>
 
       <section className="workspace">
@@ -208,7 +339,7 @@ export default function App() {
           <div className="panel-head">
             <div>
               <h2>What to Hide</h2>
-              <p>Use presets or select fields one by one.</p>
+              <p>{analysisStatus}</p>
             </div>
             <div className="button-row">
               <button type="button" onClick={selectDefaults}>Default</button>
@@ -219,19 +350,40 @@ export default function App() {
 
           <div className="rule-grid">
             {rules.map((rule) => (
-              <label key={rule.key} className="rule-card">
+              <label
+                key={rule.key}
+                className={`rule-card ${files.length > 0 && (availabilityByKey.get(rule.key)?.count ?? 0) === 0 ? "is-disabled" : ""}`}
+              >
                 <input
                   type="checkbox"
                   checked={selected.has(rule.key)}
+                  disabled={files.length > 0 && (availabilityByKey.get(rule.key)?.count ?? 0) === 0}
                   onChange={() => toggleRule(rule.key)}
                 />
                 <span>
                   <strong>{rule.title}</strong>
                   <small>{rule.description}</small>
+                  {files.length > 0 && (
+                    <small className="detected-text">
+                      {(availabilityByKey.get(rule.key)?.count ?? 0) > 0
+                        ? `Detected: ${(availabilityByKey.get(rule.key)?.labels ?? []).join(", ")}`
+                        : "Not found in this PDF"}
+                    </small>
+                  )}
+                  {(availabilityByKey.get(rule.key)?.samples?.length ?? 0) > 0 && (
+                    <small className="sample-text">
+                      Sample: {availabilityByKey.get(rule.key)?.samples.join(", ")}
+                    </small>
+                  )}
                 </span>
               </label>
             ))}
           </div>
+          {analysis && analysis.suggestedLabels.length > 0 && (
+            <p className="suggestion-text">
+              Other labels found: {analysis.suggestedLabels.join(", ")}. Add one as a custom field if it should be hidden.
+            </p>
+          )}
         </div>
 
         <aside className="panel settings-panel">
@@ -357,7 +509,7 @@ export default function App() {
           <pre>{logs.join("\n")}</pre>
         </section>
       )}
+      <footer className="app-footer">© Created by Alimbayev Nikita</footer>
     </main>
   );
 }
-
