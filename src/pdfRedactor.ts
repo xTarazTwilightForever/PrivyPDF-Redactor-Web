@@ -83,6 +83,10 @@ const sectionHeadingWords = [
   "form"
 ];
 
+function stripQuestionPrefix(text: string): string {
+  return normalizeText(text).replace(/^\d{1,3}\.?\s+/, "");
+}
+
 function debugLog(logger: DebugLogger | undefined, message: string, details?: unknown): void {
   if (logger) {
     logger(message, details);
@@ -150,7 +154,7 @@ function isSectionHeadingText(text: string): boolean {
 
 function isLabelLine(text: string, labels: string[]): boolean {
   const hasRequiredMarker = text.includes("*");
-  const clean = normalizeText(text).replace(/^\d{1,3}\.?\s+/, "");
+  const clean = stripQuestionPrefix(text);
   if (!clean) return false;
 
   return labels.some((label) => {
@@ -322,24 +326,28 @@ function analyzeFields(spans: TextSpan[], rules: RedactionRule[]): FieldAnalysis
       title: rule.title,
       labels: uniqueLabels,
       samples: uniqueSamples,
-      count: values.length
+      count: uniqueLabels.length
     };
   });
 }
 
 function collectSuggestedLabels(spans: TextSpan[], rules: RedactionRule[]): string[] {
-  const knownLabels = new Set<string>();
+  const knownLabels: string[] = [];
   for (const rule of rules) {
     for (const label of rule.labels) {
-      knownLabels.add(normalizeText(label));
+      knownLabels.push(normalizeText(label));
     }
   }
+  const isKnownLabel = (text: string) => {
+    const clean = stripQuestionPrefix(text);
+    return knownLabels.some((label) => clean === label || clean.startsWith(`${label} `));
+  };
   return [
     ...new Set(
       spans
         .map((span) => span.text.trim())
         .filter((text) => isLikelyFieldLabelText(text))
-        .filter((text) => !knownLabels.has(normalizeText(text)))
+        .filter((text) => !isKnownLabel(text))
     )
   ].slice(0, 12);
 }
@@ -379,7 +387,7 @@ function detectGlobalPatterns(spans: TextSpan[], rules: RedactionRule[], options
 
   for (const rule of rules) {
     if (!selected.has(rule.key)) continue;
-    const shouldScan = (rule.key === "email" && options.allEmails) || (options.allRegex && rule.regex);
+    const shouldScan = rule.key === "email" || (options.allRegex && rule.regex);
     if (!shouldScan || !rule.regex) continue;
 
     for (const span of spans) {

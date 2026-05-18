@@ -141,9 +141,6 @@ export default function App() {
           found.length > 0 ? `Available fields: ${found.join(" | ")}` : "No built-in fields were found.",
           ...missingDefaults.map((title) => `${title} not found in this PDF.`)
         ];
-        if (nextAnalysis.suggestedLabels.length > 0) {
-          nextLogs.push(`Other possible labels: ${nextAnalysis.suggestedLabels.join(", ")}. Add one in Add Field if it should be hidden.`);
-        }
         setLogs(nextLogs);
       })
       .catch((caught) => {
@@ -372,11 +369,6 @@ export default function App() {
               </label>
             ))}
           </div>
-          {analysis && analysis.suggestedLabels.length > 0 && (
-            <p className="suggestion-text">
-              Other labels found: {analysis.suggestedLabels.join(", ")}. Add one as a custom field if it should be hidden.
-            </p>
-          )}
         </div>
 
         <aside className="panel settings-panel">
