@@ -5,6 +5,6 @@ export default defineConfig({
   base: "/PrivyPDF-Redactor-Web/",
   plugins: [react()],
   build: {
-    target: "es2020"
+    target: "safari13"
   }
 });

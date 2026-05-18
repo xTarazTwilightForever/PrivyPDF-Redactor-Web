@@ -24,6 +24,21 @@ const validators: Array<{ value: Validator; label: string }> = [
   { value: "age", label: "Age" }
 ];
 
+function fallbackAnalysis(rules: RedactionRule[], fileCount: number): DocumentAnalysis {
+  return {
+    fields: rules.map((rule) => ({
+      key: rule.key,
+      title: rule.title,
+      labels: rule.enabledByDefault ? ["Default scan"] : [],
+      samples: [],
+      count: rule.enabledByDefault ? fileCount : 0
+    })),
+    suggestedLabels: [],
+    pageCount: 0,
+    spanCount: 0
+  };
+}
+
 function makeRuleKey(title: string, existing: RedactionRule[]): string {
   const base =
     title
@@ -93,9 +108,47 @@ export default function App() {
 
   const selectedCount = selected.size;
   const canRun = files.length > 0 && selectedCount > 0 && !isRunning;
+  const suggestedRules = useMemo<RedactionRule[]>(
+    () => (analysis?.suggestedLabels ?? []).map((label, index) => ({
+      key: `detected_${index}_${makeRuleKey(label, rules)}`,
+      title: label,
+      description: "Detected PDF field",
+      enabledByDefault: false,
+      validator: "free_text",
+      labels: [label]
+    })),
+    [analysis, rules]
+  );
+  const activeRules = useMemo(
+    () => [...rules, ...suggestedRules],
+    [rules, suggestedRules]
+  );
   const availabilityByKey = useMemo(
-    () => new Map((analysis?.fields ?? []).map((field) => [field.key, field])),
-    [analysis]
+    () => {
+      const items = analysis?.fields ?? [];
+      const entries: Array<[string, FieldAnalysis]> = [
+        ...items.map((field): [string, FieldAnalysis] => [field.key, field]),
+        ...suggestedRules.map((rule): [string, FieldAnalysis] => [rule.key, {
+          key: rule.key,
+          title: rule.title,
+          labels: rule.labels,
+          samples: [],
+          count: 1
+        }])
+      ];
+      return new Map(entries);
+    },
+    [analysis, suggestedRules]
+  );
+  const displayRules = useMemo(
+    () => [...activeRules].sort((a, b) => {
+      const aCount = files.length === 0 ? 1 : (availabilityByKey.get(a.key)?.count ?? 0);
+      const bCount = files.length === 0 ? 1 : (availabilityByKey.get(b.key)?.count ?? 0);
+      if ((aCount > 0) !== (bCount > 0)) return aCount > 0 ? -1 : 1;
+      if (a.enabledByDefault !== b.enabledByDefault) return a.enabledByDefault ? -1 : 1;
+      return 0;
+    }),
+    [activeRules, availabilityByKey, files.length]
   );
 
   const totalHits = useMemo(
@@ -129,27 +182,16 @@ export default function App() {
         setAnalysisStatus(
           `Found ${nextAnalysis.fields.filter((field) => field.count > 0).length} supported field type(s), ${nextAnalysis.spanCount} text item(s).`
         );
-        const found = nextAnalysis.fields
-          .filter((field) => field.count > 0)
-          .map((field) => `${field.title}: ${field.labels.join(", ")}`);
-        const missingDefaults = rules
-          .filter((rule) => rule.enabledByDefault)
-          .filter((rule) => (nextAnalysis.fields.find((field) => field.key === rule.key)?.count ?? 0) === 0)
-          .map((rule) => rule.title);
-        const nextLogs = [
-          `Inspection complete: ${nextAnalysis.pageCount} page(s), ${nextAnalysis.spanCount} text item(s).`,
-          found.length > 0 ? `Available fields: ${found.join(" | ")}` : "No built-in fields were found.",
-          ...missingDefaults.map((title) => `${title} not found in this PDF.`)
-        ];
-        setLogs(nextLogs);
+        setLogs([`Inspection complete: ${nextAnalysis.pageCount} page(s), ${nextAnalysis.spanCount} text item(s).`]);
       })
       .catch((caught) => {
         if (cancelled) return;
         const message = caught instanceof Error ? caught.message : "Could not inspect this PDF.";
-        setAnalysis(null);
-        setAnalysisStatus("Could not inspect fields.");
-        setError(message);
-        log("Field inspection failed.", { message });
+        setAnalysis(fallbackAnalysis(rules, files.length));
+        setAnalysisStatus("Field inspection failed. Default name and email scan stayed available.");
+        setError(null);
+        setLogs(["Field inspection failed. Default name and email scan stayed available."]);
+        console.error("[PrivyPDF] Field inspection failed", caught);
       });
 
     return () => {
@@ -180,7 +222,7 @@ export default function App() {
   }
 
   function selectAll(): void {
-    const keys = rules
+    const keys = activeRules
       .filter((rule) => files.length === 0 || (availabilityByKey.get(rule.key)?.count ?? 0) > 0)
       .map((rule) => rule.key);
     setSelected(new Set(keys));
@@ -228,23 +270,6 @@ export default function App() {
     console.debug("[PrivyPDF] Selected fields", [...selected]);
 
     try {
-      if (analysis) {
-        const missing: FieldAnalysis[] = [];
-        for (const key of selected) {
-          const field = availabilityByKey.get(key);
-          if (field && field.count === 0) {
-            missing.push(field);
-          }
-        }
-        for (const field of missing) {
-          log(`${field.title} not found in the uploaded PDF.`);
-        }
-        const suggestions = analysis.suggestedLabels.filter(Boolean);
-        if (suggestions.length > 0) {
-          log(`Other possible PDF labels detected: ${suggestions.join(", ")}. Add one in Add Field if it should be hidden.`);
-        }
-      }
-
       const processed: ProcessResult[] = [];
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
@@ -252,14 +277,16 @@ export default function App() {
 
         const result = await redactPdfFile(
           file,
-          rules,
+          activeRules,
           {
             selectedKeys: [...selected],
             customValues: splitCsv(customValues),
             allEmails,
             allRegex,
             padding,
-            debug: (message, details) => log(message, details)
+            debug: (message, details) => {
+              console.debug(`[PrivyPDF] ${message}`, details ?? "");
+            }
           },
           (nextProgress) => {
             setProgress(nextProgress);
@@ -339,7 +366,7 @@ export default function App() {
           </div>
 
           <div className="rule-grid">
-            {rules.map((rule) => (
+            {displayRules.map((rule) => (
               <label
                 key={rule.key}
                 className={`rule-card ${files.length > 0 && (availabilityByKey.get(rule.key)?.count ?? 0) === 0 ? "is-disabled" : ""}`}
