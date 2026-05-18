@@ -387,7 +387,7 @@ function detectGlobalPatterns(spans: TextSpan[], rules: RedactionRule[], options
 
   for (const rule of rules) {
     if (!selected.has(rule.key)) continue;
-    const shouldScan = rule.key === "email" || (options.allRegex && rule.regex);
+    const shouldScan = (rule.key === "email" && options.allEmails) || (options.allRegex && rule.regex);
     if (!shouldScan || !rule.regex) continue;
 
     for (const span of spans) {
