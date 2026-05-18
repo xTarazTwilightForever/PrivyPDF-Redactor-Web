@@ -149,7 +149,8 @@ function isSectionHeadingText(text: string): boolean {
 }
 
 function isLabelLine(text: string, labels: string[]): boolean {
-  const clean = normalizeText(text);
+  const hasRequiredMarker = text.includes("*");
+  const clean = normalizeText(text).replace(/^\d{1,3}\.?\s+/, "");
   if (!clean) return false;
 
   return labels.some((label) => {
@@ -158,6 +159,7 @@ function isLabelLine(text: string, labels: string[]): boolean {
     if (clean === labelClean) return true;
     if (!clean.startsWith(`${labelClean} `)) return false;
     const tail = clean.slice(labelClean.length).trim();
+    if (hasRequiredMarker) return true;
     if (!tail || tail === "required" || isQuestionNumber(tail)) return true;
     return tail.split(" ").every((part) => part === "required" || isQuestionNumber(part));
   });
@@ -199,6 +201,20 @@ function padRect(rect: Rect, padding: number): Rect {
   };
 }
 
+function unionRect(rects: Rect[]): Rect {
+  const left = Math.min(...rects.map((rect) => rect.x));
+  const top = Math.min(...rects.map((rect) => rect.y));
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width));
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(6, bottom - top)
+  };
+}
+
 function textItemRect(item: unknown, viewport: pdfjsLib.PageViewport): Rect | null {
   const candidate = item as { str?: string; width?: number; height?: number; transform?: number[] };
   if (!candidate.str || !candidate.transform || candidate.transform.length < 6) return null;
@@ -236,7 +252,41 @@ async function extractTextSpans(pdf: pdfjsLib.PDFDocumentProxy): Promise<TextSpa
       }
     }
   }
-  return spans;
+  return mergeTextSpansIntoLines(spans);
+}
+
+function areSameLine(a: TextSpan, b: TextSpan): boolean {
+  if (a.pageIndex !== b.pageIndex) return false;
+  const aMiddle = a.rect.y + a.rect.height / 2;
+  const bMiddle = b.rect.y + b.rect.height / 2;
+  return Math.abs(aMiddle - bMiddle) <= Math.max(3, Math.min(a.rect.height, b.rect.height) * 0.65);
+}
+
+function mergeTextSpansIntoLines(spans: TextSpan[]): TextSpan[] {
+  const sorted = [...spans].sort((a, b) => {
+    if (a.pageIndex !== b.pageIndex) return a.pageIndex - b.pageIndex;
+    if (Math.abs(a.rect.y - b.rect.y) > 2) return a.rect.y - b.rect.y;
+    return a.rect.x - b.rect.x;
+  });
+  const lines: TextSpan[][] = [];
+
+  for (const span of sorted) {
+    const currentLine = lines[lines.length - 1];
+    if (currentLine && areSameLine(currentLine[0], span)) {
+      currentLine.push(span);
+    } else {
+      lines.push([span]);
+    }
+  }
+
+  return lines.map((line) => {
+    const ordered = [...line].sort((a, b) => a.rect.x - b.rect.x);
+    return {
+      pageIndex: ordered[0].pageIndex,
+      text: ordered.map((span) => span.text).join(" ").replace(/\s+/g, " ").trim(),
+      rect: unionRect(ordered.map((span) => span.rect))
+    };
+  });
 }
 
 function findValueAfterLabel(labelSpan: TextSpan, spans: TextSpan[], rule: RedactionRule): TextSpan | undefined {

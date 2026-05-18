@@ -126,13 +126,6 @@ export default function App() {
       .then((nextAnalysis) => {
         if (cancelled) return;
         setAnalysis(nextAnalysis);
-        const availableDefaults = nextAnalysis.fields
-          .filter((field) => field.count > 0)
-          .map((field) => field.key);
-        setSelected((current) => {
-          const retained = [...current].filter((key) => availableDefaults.includes(key));
-          return new Set(retained.length > 0 ? retained : availableDefaults);
-        });
         setAnalysisStatus(
           `Found ${nextAnalysis.fields.filter((field) => field.count > 0).length} supported field type(s), ${nextAnalysis.spanCount} text item(s).`
         );
