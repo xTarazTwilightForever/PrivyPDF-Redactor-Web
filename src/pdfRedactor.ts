@@ -14,10 +14,22 @@ export type Rect = {
 };
 
 export type RedactionHit = {
+  key: string;
   pageIndex: number;
   rect: Rect;
   reason: string;
   text: string;
+  source: "auto" | "manual";
+};
+
+type RawRedactionHit = Omit<RedactionHit, "key" | "source">;
+
+export type ManualRedaction = {
+  id: string;
+  fileId: string;
+  fileName: string;
+  pageIndex: number;
+  rect: Rect;
 };
 
 export type ProcessOptions = {
@@ -26,6 +38,9 @@ export type ProcessOptions = {
   allEmails: boolean;
   allRegex: boolean;
   padding: number;
+  fileId?: string;
+  ignoredHitKeys?: string[];
+  manualRedactions?: ManualRedaction[];
   debug?: DebugLogger;
 };
 
@@ -40,6 +55,17 @@ export type ProcessResult = {
   outputName: string;
   blob: Blob;
   hits: RedactionHit[];
+};
+
+export type PreviewResult = {
+  fileName: string;
+  pageIndex: number;
+  totalPages: number;
+  pageWidth: number;
+  pageHeight: number;
+  originalUrl: string;
+  hitsOnPage: RedactionHit[];
+  totalHits: number;
 };
 
 export type FieldAnalysis = {
@@ -352,9 +378,9 @@ function collectSuggestedLabels(spans: TextSpan[], rules: RedactionRule[]): stri
   ].slice(0, 12);
 }
 
-function detectLabelValues(spans: TextSpan[], rules: RedactionRule[], options: ProcessOptions): RedactionHit[] {
+function detectLabelValues(spans: TextSpan[], rules: RedactionRule[], options: ProcessOptions): RawRedactionHit[] {
   const selected = new Set(options.selectedKeys);
-  const hits: RedactionHit[] = [];
+  const hits: RawRedactionHit[] = [];
 
   for (const rule of rules) {
     if (!selected.has(rule.key)) continue;
@@ -381,9 +407,9 @@ function detectLabelValues(spans: TextSpan[], rules: RedactionRule[], options: P
   return hits;
 }
 
-function detectGlobalPatterns(spans: TextSpan[], rules: RedactionRule[], options: ProcessOptions): RedactionHit[] {
+function detectGlobalPatterns(spans: TextSpan[], rules: RedactionRule[], options: ProcessOptions): RawRedactionHit[] {
   const selected = new Set(options.selectedKeys);
-  const hits: RedactionHit[] = [];
+  const hits: RawRedactionHit[] = [];
 
   for (const rule of rules) {
     if (!selected.has(rule.key)) continue;
@@ -405,8 +431,8 @@ function detectGlobalPatterns(spans: TextSpan[], rules: RedactionRule[], options
   return hits;
 }
 
-function detectCustomValues(spans: TextSpan[], options: ProcessOptions): RedactionHit[] {
-  const hits: RedactionHit[] = [];
+function detectCustomValues(spans: TextSpan[], options: ProcessOptions): RawRedactionHit[] {
+  const hits: RawRedactionHit[] = [];
   for (const span of spans) {
     const cleanSpan = normalizeText(span.text);
     for (const value of options.customValues) {
@@ -423,24 +449,70 @@ function detectCustomValues(spans: TextSpan[], options: ProcessOptions): Redacti
   return hits;
 }
 
+export function redactionHitKey(hit: Pick<RedactionHit, "pageIndex" | "rect" | "reason" | "text">): string {
+  return [
+    hit.pageIndex,
+    Math.round(hit.rect.x),
+    Math.round(hit.rect.y),
+    Math.round(hit.rect.width),
+    Math.round(hit.rect.height),
+    hit.reason,
+    normalizeText(hit.text)
+  ].join(":");
+}
+
+function withHitKeys(hits: RawRedactionHit[]): RedactionHit[] {
+  return hits.map((hit) => ({
+    ...hit,
+    key: redactionHitKey(hit),
+    source: "auto"
+  }));
+}
+
 function dedupeHits(hits: RedactionHit[]): RedactionHit[] {
   const seen = new Set<string>();
   return hits.filter((hit) => {
-    const key = [
-      hit.pageIndex,
-      Math.round(hit.rect.x),
-      Math.round(hit.rect.y),
-      Math.round(hit.rect.width),
-      Math.round(hit.rect.height),
-      hit.reason
-    ].join(":");
-    if (seen.has(key)) return false;
-    seen.add(key);
+    if (seen.has(hit.key)) return false;
+    seen.add(hit.key);
     return true;
   });
 }
 
-async function renderRedactedPage(page: PdfPageProxy, hits: RedactionHit[], pageIndex: number): Promise<HTMLCanvasElement> {
+function manualHit(redaction: ManualRedaction): RedactionHit {
+  return {
+    key: redaction.id,
+    pageIndex: redaction.pageIndex,
+    rect: redaction.rect,
+    reason: "manual",
+    text: "Manual redaction",
+    source: "manual"
+  };
+}
+
+function detectRedactionHits(
+  spans: TextSpan[],
+  rules: RedactionRule[],
+  options: ProcessOptions,
+  fileName: string
+): RedactionHit[] {
+  const ignored = new Set(options.ignoredHitKeys ?? []);
+  const autoHits = withHitKeys([
+    ...detectLabelValues(spans, rules, options),
+    ...detectGlobalPatterns(spans, rules, options),
+    ...detectCustomValues(spans, options)
+  ]).filter((hit) => !ignored.has(hit.key));
+  const manualHits = (options.manualRedactions ?? [])
+    .filter((redaction) => options.fileId ? redaction.fileId === options.fileId : redaction.fileName === fileName)
+    .map(manualHit);
+
+  return dedupeHits([...autoHits, ...manualHits]);
+}
+
+async function renderPdfPage(
+  page: PdfPageProxy,
+  hits: RedactionHit[] = [],
+  pageIndex = 0
+): Promise<HTMLCanvasElement> {
   const viewport = page.getViewport({ scale: renderScale });
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
@@ -451,17 +523,19 @@ async function renderRedactedPage(page: PdfPageProxy, hits: RedactionHit[], page
 
   await page.render({ canvas, canvasContext: context, viewport }).promise;
 
-  context.save();
-  context.fillStyle = "#000";
-  for (const hit of hits.filter((item) => item.pageIndex === pageIndex)) {
-    context.fillRect(
-      hit.rect.x * renderScale,
-      hit.rect.y * renderScale,
-      hit.rect.width * renderScale,
-      hit.rect.height * renderScale
-    );
+  if (hits.length > 0) {
+    context.save();
+    context.fillStyle = "#000";
+    for (const hit of hits.filter((item) => item.pageIndex === pageIndex)) {
+      context.fillRect(
+        hit.rect.x * renderScale,
+        hit.rect.y * renderScale,
+        hit.rect.width * renderScale,
+        hit.rect.height * renderScale
+      );
+    }
+    context.restore();
   }
-  context.restore();
 
   return canvas;
 }
@@ -485,11 +559,7 @@ export async function redactPdfFile(
 
   const spans = await extractTextSpans(pdf);
   debugLog(options.debug, `Extracted ${spans.length} text span(s).`);
-  const hits = dedupeHits([
-    ...detectLabelValues(spans, rules, options),
-    ...detectGlobalPatterns(spans, rules, options),
-    ...detectCustomValues(spans, options)
-  ]);
+  const hits = detectRedactionHits(spans, rules, options, file.name);
   debugLog(options.debug, `Detected ${hits.length} redaction box(es).`, hits.map((hit) => ({ reason: hit.reason, text: hit.text })));
 
   let outputPdf: jsPDF | null = null;
@@ -498,7 +568,7 @@ export async function redactPdfFile(
     onProgress({ page: pageNumber, totalPages: pdf.numPages, message: `Rendering page ${pageNumber}` });
     const page = await pdf.getPage(pageNumber);
     const viewport = page.getViewport({ scale: 1 });
-    const canvas = await renderRedactedPage(page, hits, pageNumber - 1);
+    const canvas = await renderPdfPage(page, hits, pageNumber - 1);
     const image = canvas.toDataURL("image/jpeg", 0.95);
     const orientation = viewport.width > viewport.height ? "landscape" : "portrait";
 
@@ -523,6 +593,38 @@ export async function redactPdfFile(
     outputName: outputName(file.name),
     blob,
     hits
+  };
+}
+
+export async function createPdfPreview(
+  file: File,
+  rules: RedactionRule[],
+  options: ProcessOptions,
+  pageIndex: number
+): Promise<PreviewResult> {
+  const data = await file.arrayBuffer();
+  const disableWorker = isSafariBrowser();
+  debugLog(options.debug, `Previewing PDF "${file.name}".`, { disableWorker, bytes: data.byteLength });
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(data, disableWorker) as never).promise;
+  if (pdf.numPages === 0) throw new Error("The PDF had no pages.");
+
+  const safePageIndex = Math.min(Math.max(pageIndex, 0), pdf.numPages - 1);
+  const spans = await extractTextSpans(pdf);
+  const hits = detectRedactionHits(spans, rules, options, file.name);
+  const page = await pdf.getPage(safePageIndex + 1);
+  const viewport = page.getViewport({ scale: 1 });
+  const originalCanvas = await renderPdfPage(page);
+  const hitsOnPage = hits.filter((hit) => hit.pageIndex === safePageIndex);
+
+  return {
+    fileName: file.name,
+    pageIndex: safePageIndex,
+    totalPages: pdf.numPages,
+    pageWidth: viewport.width,
+    pageHeight: viewport.height,
+    originalUrl: originalCanvas.toDataURL("image/png"),
+    hitsOnPage,
+    totalHits: hits.length
   };
 }
 

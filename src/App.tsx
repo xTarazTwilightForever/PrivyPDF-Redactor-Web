@@ -1,10 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 import { defaultRules, type RedactionRule, type Validator } from "./rules";
 import {
   analyzePdfFiles,
+  createPdfPreview,
   redactPdfFile,
+  type ManualRedaction,
   type FieldAnalysis,
   type DocumentAnalysis,
+  type PreviewResult,
+  type Rect,
+  type RedactionHit,
   type ProcessProgress,
   type ProcessResult
 } from "./pdfRedactor";
@@ -14,6 +26,15 @@ type CustomFieldDraft = {
   labels: string;
   validator: Validator;
   enabledByDefault: boolean;
+};
+
+type PreviewMode = "split" | "original" | "redacted";
+
+type DragDraft = {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
 };
 
 const validators: Array<{ value: Validator; label: string }> = [
@@ -81,8 +102,37 @@ function debugLine(message: string, details?: unknown): string {
   }
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function rectFromPoints(startX: number, startY: number, endX: number, endY: number): Rect {
+  const left = Math.min(startX, endX);
+  const top = Math.min(startY, endY);
+  return {
+    x: left,
+    y: top,
+    width: Math.abs(endX - startX),
+    height: Math.abs(endY - startY)
+  };
+}
+
+function rectStyle(rect: Rect, pageWidth: number, pageHeight: number): CSSProperties {
+  return {
+    left: `${(rect.x / pageWidth) * 100}%`,
+    top: `${(rect.y / pageHeight) * 100}%`,
+    width: `${(rect.width / pageWidth) * 100}%`,
+    height: `${(rect.height / pageHeight) * 100}%`
+  };
+}
+
+function fileId(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const redactedPreviewRef = useRef<HTMLDivElement | null>(null);
   const [rules, setRules] = useState<RedactionRule[]>(defaultRules);
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(defaultRules.filter((rule) => rule.enabledByDefault).map((rule) => rule.key))
@@ -100,6 +150,18 @@ export default function App() {
   });
   const [progress, setProgress] = useState<ProcessProgress | null>(null);
   const [results, setResults] = useState<ProcessResult[]>([]);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [previewFileIndex, setPreviewFileIndex] = useState(0);
+  const [previewPage, setPreviewPage] = useState(0);
+  const [previewStatus, setPreviewStatus] = useState("Attach a PDF to preview redactions.");
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("split");
+  const [zoom, setZoom] = useState(1);
+  const [isDrawingManualBox, setIsDrawingManualBox] = useState(false);
+  const [dragDraft, setDragDraft] = useState<DragDraft | null>(null);
+  const [selectedHitKey, setSelectedHitKey] = useState<string | null>(null);
+  const [ignoredHitKeys, setIgnoredHitKeys] = useState<Set<string>>(() => new Set());
+  const [manualRedactions, setManualRedactions] = useState<ManualRedaction[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState("Attach PDFs to inspect available fields.");
@@ -107,7 +169,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const selectedCount = selected.size;
-  const canRun = files.length > 0 && selectedCount > 0 && !isRunning;
+  const selectedPreviewFile = files[previewFileIndex] ?? null;
+  const canRun =
+    files.length > 0 &&
+    (selectedCount > 0 || customValues.trim().length > 0 || manualRedactions.length > 0) &&
+    !isRunning;
   const suggestedRules = useMemo<RedactionRule[]>(
     () => (analysis?.suggestedLabels ?? []).map((label, index) => ({
       key: `detected_${index}_${makeRuleKey(label, rules)}`,
@@ -155,6 +221,14 @@ export default function App() {
     () => results.reduce((total, result) => total + result.hits.length, 0),
     [results]
   );
+  const selectedSignature = useMemo(
+    () => [...selected].sort().join("|"),
+    [selected]
+  );
+  const ignoredSignature = useMemo(
+    () => [...ignoredHitKeys].sort().join("|"),
+    [ignoredHitKeys]
+  );
 
   function log(message: string, details?: unknown): void {
     const line = debugLine(message, details);
@@ -198,6 +272,80 @@ export default function App() {
       cancelled = true;
     };
   }, [files, rules]);
+
+  useEffect(() => {
+    setPreviewFileIndex(0);
+    setPreviewPage(0);
+    setSelectedHitKey(null);
+  }, [files]);
+
+  useEffect(() => {
+    setPreviewPage(0);
+    setSelectedHitKey(null);
+  }, [previewFileIndex]);
+
+  useEffect(() => {
+    if (!selectedPreviewFile) {
+      setPreview(null);
+      setPreviewStatus("Attach a PDF to preview redactions.");
+      setIsPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsPreviewLoading(true);
+    setPreviewStatus("Rendering preview...");
+
+    createPdfPreview(
+      selectedPreviewFile,
+      activeRules,
+      {
+        selectedKeys: [...selected],
+        customValues: splitCsv(customValues),
+        allEmails,
+        allRegex,
+        padding,
+        fileId: fileId(selectedPreviewFile),
+        ignoredHitKeys: [...ignoredHitKeys],
+        manualRedactions
+      },
+      previewPage
+    )
+      .then((nextPreview) => {
+        if (cancelled) return;
+        setPreview(nextPreview);
+        setPreviewPage(nextPreview.pageIndex);
+        setPreviewStatus(
+          `${nextPreview.fileName}: page ${nextPreview.pageIndex + 1} of ${nextPreview.totalPages}, ${nextPreview.hitsOnPage.length} box(es) on this page.`
+        );
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        const message = caught instanceof Error ? caught.message : "Could not render preview.";
+        setPreview(null);
+        setPreviewStatus(message);
+      })
+      .finally(() => {
+        if (!cancelled) setIsPreviewLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeRules,
+    allEmails,
+    allRegex,
+    customValues,
+    ignoredHitKeys,
+    ignoredSignature,
+    manualRedactions,
+    padding,
+    previewPage,
+    selected,
+    selectedPreviewFile,
+    selectedSignature
+  ]);
 
   function toggleRule(key: string): void {
     const field = availabilityByKey.get(key);
@@ -259,6 +407,126 @@ export default function App() {
     setError(null);
   }
 
+  function pointerToPdfPoint(event: ReactPointerEvent<HTMLDivElement>): { x: number; y: number } | null {
+    if (!preview || !redactedPreviewRef.current) return null;
+    const bounds = redactedPreviewRef.current.getBoundingClientRect();
+    if (bounds.width === 0 || bounds.height === 0) return null;
+    return {
+      x: clamp(((event.clientX - bounds.left) / bounds.width) * preview.pageWidth, 0, preview.pageWidth),
+      y: clamp(((event.clientY - bounds.top) / bounds.height) * preview.pageHeight, 0, preview.pageHeight)
+    };
+  }
+
+  function beginManualRedaction(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (!isDrawingManualBox || !preview || !selectedPreviewFile) return;
+    const point = pointerToPdfPoint(event);
+    if (!point) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedHitKey(null);
+    setDragDraft({
+      startX: point.x,
+      startY: point.y,
+      currentX: point.x,
+      currentY: point.y
+    });
+  }
+
+  function updateManualRedaction(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (!dragDraft) return;
+    const point = pointerToPdfPoint(event);
+    if (!point) return;
+    setDragDraft((current) => current ? { ...current, currentX: point.x, currentY: point.y } : current);
+  }
+
+  function finishManualRedaction(): void {
+    if (!dragDraft || !preview || !selectedPreviewFile) {
+      setDragDraft(null);
+      return;
+    }
+
+    let rect = rectFromPoints(dragDraft.startX, dragDraft.startY, dragDraft.currentX, dragDraft.currentY);
+    if (rect.width < 6 || rect.height < 6) {
+      const width = Math.min(92, preview.pageWidth);
+      const height = Math.min(26, preview.pageHeight);
+      rect = {
+        x: clamp(dragDraft.startX - width / 2, 0, preview.pageWidth - width),
+        y: clamp(dragDraft.startY - height / 2, 0, preview.pageHeight - height),
+        width,
+        height
+      };
+    }
+
+    const redaction: ManualRedaction = {
+      id: `manual:${fileId(selectedPreviewFile)}:${preview.pageIndex}:${Date.now()}:${Math.random().toString(16).slice(2)}`,
+      fileId: fileId(selectedPreviewFile),
+      fileName: selectedPreviewFile.name,
+      pageIndex: preview.pageIndex,
+      rect
+    };
+
+    setManualRedactions((current) => [...current, redaction]);
+    setSelectedHitKey(redaction.id);
+    setDragDraft(null);
+  }
+
+  function removeSelectedHit(): void {
+    if (!selectedHitKey) return;
+    const selectedHit = preview?.hitsOnPage.find((hit) => hit.key === selectedHitKey);
+    if (selectedHit?.source === "manual") {
+      setManualRedactions((current) => current.filter((redaction) => redaction.id !== selectedHitKey));
+    } else {
+      setIgnoredHitKeys((current) => new Set([...current, selectedHitKey]));
+    }
+    setSelectedHitKey(null);
+  }
+
+  function renderPreviewSurface(title: string, redacted: boolean) {
+    if (!preview) return null;
+    const draftRect = dragDraft
+      ? rectFromPoints(dragDraft.startX, dragDraft.startY, dragDraft.currentX, dragDraft.currentY)
+      : null;
+    const hits = redacted ? preview.hitsOnPage : [];
+
+    return (
+      <figure className="pdf-preview">
+        <figcaption>{title}</figcaption>
+        <div
+          ref={redacted ? redactedPreviewRef : undefined}
+          className={`preview-canvas ${redacted && isDrawingManualBox ? "is-drawing" : ""}`}
+          style={{
+            width: `${preview.pageWidth * zoom}px`,
+            height: `${preview.pageHeight * zoom}px`
+          }}
+          onPointerDown={redacted ? beginManualRedaction : undefined}
+          onPointerMove={redacted ? updateManualRedaction : undefined}
+          onPointerUp={redacted ? finishManualRedaction : undefined}
+          onPointerCancel={redacted ? () => setDragDraft(null) : undefined}
+        >
+          <img src={preview.originalUrl} alt={`${preview.fileName} ${title.toLowerCase()} page ${preview.pageIndex + 1}`} />
+          {hits.map((hit: RedactionHit) => (
+            <button
+              type="button"
+              key={hit.key}
+              className={`redaction-box ${selectedHitKey === hit.key ? "is-selected" : ""}`}
+              style={rectStyle(hit.rect, preview.pageWidth, preview.pageHeight)}
+              title={`${hit.reason}: ${hit.text}`}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+              }}
+              onClick={() => setSelectedHitKey(hit.key)}
+            />
+          ))}
+          {draftRect && redacted && (
+            <span
+              className="redaction-box is-draft"
+              style={rectStyle(draftRect, preview.pageWidth, preview.pageHeight)}
+            />
+          )}
+        </div>
+      </figure>
+    );
+  }
+
   async function processFiles(): Promise<void> {
     if (!canRun) return;
     setIsRunning(true);
@@ -284,6 +552,9 @@ export default function App() {
             allEmails,
             allRegex,
             padding,
+            fileId: fileId(file),
+            ignoredHitKeys: [...ignoredHitKeys],
+            manualRedactions,
             debug: (message, details) => {
               console.debug(`[PrivyPDF] ${message}`, details ?? "");
             }
@@ -338,7 +609,12 @@ export default function App() {
             type="file"
             accept="application/pdf,.pdf"
             multiple
-            onChange={(event) => setFiles(Array.from(event.currentTarget.files ?? []))}
+            onChange={(event) => {
+              setFiles(Array.from(event.currentTarget.files ?? []));
+              setIgnoredHitKeys(new Set());
+              setManualRedactions([]);
+              setSelectedHitKey(null);
+            }}
           />
           <button
             type="button"
@@ -448,7 +724,7 @@ export default function App() {
             Exact values
             <input
               value={customValues}
-              placeholder="Jane Doe, jane@example.com"
+              placeholder="Nikita Alimbayev, nikita@example.com"
               onChange={(event) => setCustomValues(event.target.value)}
             />
           </label>
@@ -479,6 +755,113 @@ export default function App() {
             Apply regex fields globally
           </label>
         </aside>
+      </section>
+
+      <section className="panel preview-panel">
+        <div className="panel-head">
+          <div>
+            <h2>Live Preview</h2>
+            <p>{previewStatus}</p>
+          </div>
+          <div className="button-row">
+            {files.length > 1 && (
+              <select
+                className="document-select"
+                value={previewFileIndex}
+                disabled={isPreviewLoading}
+                onChange={(event) => setPreviewFileIndex(Number(event.target.value))}
+              >
+                {files.map((file, index) => (
+                  <option key={`${file.name}-${index}`} value={index}>
+                    {file.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              disabled={!preview || preview.pageIndex === 0 || isPreviewLoading}
+              onClick={() => setPreviewPage((page) => Math.max(0, page - 1))}
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              disabled={!preview || preview.pageIndex >= preview.totalPages - 1 || isPreviewLoading}
+              onClick={() => setPreviewPage((page) => page + 1)}
+            >
+              Next
+            </button>
+          </div>
+        </div>
+
+        {preview ? (
+          <>
+            <div className="preview-meta">
+              <span>{isPreviewLoading ? "Updating preview..." : `${preview.totalHits} total redaction box(es)`}</span>
+              <span>{files.length > 1 ? `Document ${previewFileIndex + 1} of ${files.length}` : "Single document"}</span>
+            </div>
+            <div className="preview-tools">
+              <div className="segmented-control">
+                <button
+                  type="button"
+                  className={previewMode === "split" ? "is-active" : ""}
+                  onClick={() => setPreviewMode("split")}
+                >
+                  Split
+                </button>
+                <button
+                  type="button"
+                  className={previewMode === "original" ? "is-active" : ""}
+                  onClick={() => setPreviewMode("original")}
+                >
+                  Original
+                </button>
+                <button
+                  type="button"
+                  className={previewMode === "redacted" ? "is-active" : ""}
+                  onClick={() => setPreviewMode("redacted")}
+                >
+                  Redacted
+                </button>
+              </div>
+              <div className="zoom-control">
+                <button type="button" onClick={() => setZoom((value) => clamp(value - 0.15, 0.6, 2.4))}>-</button>
+                <input
+                  type="range"
+                  min={0.6}
+                  max={2.4}
+                  step={0.05}
+                  value={zoom}
+                  onChange={(event) => setZoom(Number(event.target.value))}
+                />
+                <button type="button" onClick={() => setZoom((value) => clamp(value + 0.15, 0.6, 2.4))}>+</button>
+                <span>{Math.round(zoom * 100)}%</span>
+              </div>
+              <button
+                type="button"
+                className={isDrawingManualBox ? "is-active" : ""}
+                onClick={() => {
+                  setIsDrawingManualBox((value) => !value);
+                  setDragDraft(null);
+                }}
+              >
+                Add box
+              </button>
+              <button type="button" disabled={!selectedHitKey} onClick={removeSelectedHit}>
+                Restore selected
+              </button>
+            </div>
+            <div className={`preview-grid preview-grid-${previewMode}`}>
+              {(previewMode === "split" || previewMode === "original") && renderPreviewSurface("Original", false)}
+              {(previewMode === "split" || previewMode === "redacted") && renderPreviewSurface("Redacted", true)}
+            </div>
+          </>
+        ) : (
+          <div className="preview-empty">
+            <span>{isPreviewLoading ? "Rendering preview..." : "No preview yet"}</span>
+          </div>
+        )}
       </section>
 
       <section className="panel run-panel">
