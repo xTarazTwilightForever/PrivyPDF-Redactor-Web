@@ -609,7 +609,7 @@ export default function App() {
           className={`preview-canvas ${redacted && isDrawingManualBox ? "is-drawing" : ""}`}
           style={{
             width: `${preview.pageWidth * zoom}px`,
-            height: `${preview.pageHeight * zoom}px`
+            aspectRatio: `${preview.pageWidth} / ${preview.pageHeight}`
           }}
           onPointerDown={redacted ? beginManualRedaction : undefined}
           onPointerMove={redacted ? updateManualRedaction : undefined}
