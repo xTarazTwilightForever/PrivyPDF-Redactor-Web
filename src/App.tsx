@@ -635,11 +635,12 @@ export default function App() {
               <button
                 type="button"
                 key={hit.key}
-                className={`redaction-box ${isSelected ? "is-selected" : ""}`}
+                className={`redaction-box ${hit.source === "auto" ? "is-auto" : "is-manual"} ${isSelected ? "is-selected" : ""}`}
                 style={rectStyle(activeRect, preview.pageWidth, preview.pageHeight)}
                 title={`${hit.reason}: ${hit.text}`}
                 onPointerDown={(event) => {
                   event.stopPropagation();
+                  setSelectedHitKey(hit.key);
                 }}
                 onClick={() => setSelectedHitKey(hit.key)}
               >
@@ -983,6 +984,21 @@ export default function App() {
                 Restore selected
               </button>
             </div>
+            {preview.hitsOnPage.length > 0 && redactionToolsEnabled && (
+              <div className="redaction-list">
+                {preview.hitsOnPage.map((hit, index) => (
+                  <button
+                    type="button"
+                    key={hit.key}
+                    className={selectedHitKey === hit.key ? "is-selected" : ""}
+                    onClick={() => setSelectedHitKey(hit.key)}
+                  >
+                    <strong>{index + 1}. {hit.reason}</strong>
+                    <span>{hit.source === "auto" ? "Auto" : "Manual"} · {hit.text}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             <div className={`preview-grid preview-grid-${previewMode}`}>
               {(previewMode === "split" || previewMode === "original") && renderPreviewSurface("Original", false)}
               {(previewMode === "split" || previewMode === "redacted") && renderPreviewSurface("Redacted", true)}

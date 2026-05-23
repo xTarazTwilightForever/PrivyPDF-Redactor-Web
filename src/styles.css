@@ -338,18 +338,44 @@ select:focus-visible {
 .redaction-box {
   position: absolute;
   z-index: 2;
+  display: block;
   min-height: 0;
   border: 1px solid rgba(255, 255, 255, 0.58);
   border-radius: 2px;
   padding: 0;
   background: #000;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28);
+  opacity: 0.88;
+  transform: scale(1);
+  transform-origin: center;
 }
 
 .redaction-box:hover,
 .redaction-box.is-selected {
   outline: 3px solid var(--accent);
   outline-offset: 1px;
+  opacity: 0.96;
+}
+
+.redaction-box.is-auto::after,
+.redaction-box.is-manual::after {
+  position: absolute;
+  inset: -8px;
+  content: "";
+}
+
+.redaction-box.is-selected::before {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 4px);
+  border-radius: 4px;
+  padding: 2px 5px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+  content: "selected";
 }
 
 .redaction-box.is-draft {
@@ -415,6 +441,35 @@ select:focus-visible {
 
 .document-select {
   min-width: 0;
+}
+
+.redaction-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -2px 0 12px;
+}
+
+.redaction-list button {
+  display: grid;
+  gap: 3px;
+  min-height: 44px;
+  max-width: 220px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.redaction-list button.is-selected {
+  border-color: var(--accent);
+  background: #eff6ff;
+}
+
+.redaction-list span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .preview-tools {
