@@ -159,6 +159,12 @@ function fileId(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
+function pageLabel(preview: PreviewResult): string {
+  if (preview.pageIndex >= preview.totalPages - 1) return "Last page";
+  if (preview.pageIndex === preview.totalPages - 2) return "Last";
+  return "Next";
+}
+
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const redactedPreviewRef = useRef<HTMLDivElement | null>(null);
@@ -864,7 +870,7 @@ export default function App() {
             Exact values
             <input
               value={customValues}
-              placeholder="Nikita Alimbayev, nikita@example.com"
+              placeholder="Nikita Alimbayev, alimbayev@example.com"
               onChange={(event) => setCustomValues(event.target.value)}
             />
           </label>
@@ -985,18 +991,24 @@ export default function App() {
               </button>
             </div>
             {preview.hitsOnPage.length > 0 && redactionToolsEnabled && (
-              <div className="redaction-list">
-                {preview.hitsOnPage.map((hit, index) => (
-                  <button
-                    type="button"
-                    key={hit.key}
-                    className={selectedHitKey === hit.key ? "is-selected" : ""}
-                    onClick={() => setSelectedHitKey(hit.key)}
-                  >
-                    <strong>{index + 1}. {hit.reason}</strong>
-                    <span>{hit.source === "auto" ? "Auto" : "Manual"} · {hit.text}</span>
-                  </button>
-                ))}
+              <div className="redaction-object-panel">
+                <div>
+                  <h3>Redaction objects</h3>
+                  <p>Select an object to restore or resize it.</p>
+                </div>
+                <div className="redaction-list">
+                  {preview.hitsOnPage.map((hit, index) => (
+                    <button
+                      type="button"
+                      key={hit.key}
+                      className={selectedHitKey === hit.key ? "is-selected" : ""}
+                      onClick={() => setSelectedHitKey(hit.key)}
+                    >
+                      <strong>{index + 1}. {hit.reason}</strong>
+                      <span>{hit.source === "auto" ? "Auto" : "Manual"} · {hit.text}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             <div className={`preview-grid preview-grid-${previewMode}`}>
@@ -1011,13 +1023,32 @@ export default function App() {
               >
                 Previous
               </button>
-              <button
-                type="button"
-                disabled={!preview || preview.pageIndex >= preview.totalPages - 1 || isPreviewLoading}
-                onClick={() => setPreviewPage((page) => page + 1)}
-              >
-                Next
-              </button>
+              <label className="page-picker">
+                Page
+                <input
+                  type="number"
+                  min={1}
+                  max={preview.totalPages}
+                  value={preview.pageIndex + 1}
+                  disabled={isPreviewLoading}
+                  onChange={(event) => {
+                    const page = Number(event.target.value);
+                    if (!Number.isNaN(page)) {
+                      setPreviewPage(clamp(page, 1, preview.totalPages) - 1);
+                    }
+                  }}
+                />
+                <span>of {preview.totalPages}</span>
+              </label>
+              {preview.pageIndex < preview.totalPages - 1 && (
+                <button
+                  type="button"
+                  disabled={isPreviewLoading}
+                  onClick={() => setPreviewPage((page) => page + 1)}
+                >
+                  {pageLabel(preview)}
+                </button>
+              )}
             </div>
           </>
         ) : (
