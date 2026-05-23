@@ -276,38 +276,28 @@ select:focus-visible {
   grid-template-columns: 1fr;
 }
 
-.pdf-preview {
+.pdf-preview-shell {
+  position: relative;
   min-width: 0;
+  max-height: 760px;
+  margin: 0;
+}
+
+.pdf-preview {
+  width: 100%;
   max-height: 760px;
   margin: 0;
   overflow: scroll;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #eef2f7;
-  scrollbar-color: #8aa4d6 #e7ecf5;
-  scrollbar-width: auto;
-  scrollbar-gutter: stable both-edges;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: none;
 }
 
 .pdf-preview::-webkit-scrollbar {
-  width: 14px;
-  height: 14px;
-  background: #e7ecf5;
-}
-
-.pdf-preview::-webkit-scrollbar-track {
-  border-radius: 999px;
-  background: #e7ecf5;
-}
-
-.pdf-preview::-webkit-scrollbar-thumb {
-  border: 3px solid #e7ecf5;
-  border-radius: 999px;
-  background: #8aa4d6;
-}
-
-.pdf-preview::-webkit-scrollbar-thumb:hover {
-  background: var(--accent);
+  width: 0;
+  height: 0;
 }
 
 .pdf-preview figcaption {
@@ -340,6 +330,8 @@ select:focus-visible {
 }
 
 .redaction-box {
+  appearance: none;
+  -webkit-appearance: none;
   position: absolute;
   z-index: 2;
   display: block;
@@ -347,12 +339,28 @@ select:focus-visible {
   border: 1px solid rgba(255, 255, 255, 0.58);
   border-radius: 2px;
   padding: 0;
-  background: #000;
+  background: transparent;
+  background-image: none;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28);
+  filter: none;
+  mix-blend-mode: normal;
   opacity: 1;
+  overflow: visible;
   transform: scale(1);
   transform-origin: center;
   cursor: move;
+}
+
+.redaction-fill {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--redaction-color, #000);
+  filter: none;
+  mix-blend-mode: normal;
+  opacity: 1;
+  pointer-events: none;
 }
 
 .redaction-box:hover,
@@ -371,6 +379,7 @@ select:focus-visible {
 
 .redaction-box.is-selected::before {
   position: absolute;
+  z-index: 4;
   left: 0;
   bottom: calc(100% + 4px);
   border-radius: 4px;
@@ -385,7 +394,7 @@ select:focus-visible {
 
 .redaction-box.is-draft {
   pointer-events: none;
-  background: #000;
+  background: transparent;
   outline: 2px dashed var(--accent);
   outline-offset: 1px;
   opacity: 1;
@@ -401,13 +410,64 @@ select:focus-visible {
 
 .resize-handle {
   position: absolute;
-  z-index: 3;
+  z-index: 5;
   width: 12px;
   height: 12px;
   border: 2px solid #fff;
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+
+.custom-scrollbar {
+  position: absolute;
+  z-index: 8;
+  display: none;
+  border: 1px solid #c7d3e8;
+  border-radius: 999px;
+  background: #e8eef8;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  touch-action: none;
+}
+
+.custom-scrollbar.is-active {
+  display: block;
+}
+
+.custom-scrollbar span {
+  position: absolute;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.custom-scrollbar:hover span,
+.custom-scrollbar:active span {
+  background: #1748b8;
+}
+
+.custom-scrollbar-y {
+  top: 52px;
+  right: 6px;
+  bottom: 18px;
+  width: 14px;
+}
+
+.custom-scrollbar-y span {
+  left: 2px;
+  right: 2px;
+}
+
+.custom-scrollbar-x {
+  right: 22px;
+  bottom: 6px;
+  left: 6px;
+  height: 14px;
+}
+
+.custom-scrollbar-x span {
+  top: 2px;
+  bottom: 2px;
 }
 
 .resize-nw {

@@ -54,6 +54,22 @@ type MoveDraft = {
   currentY: number;
 };
 
+type SurfaceKind = "original" | "redacted";
+
+type ScrollState = {
+  canX: boolean;
+  canY: boolean;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type ScrollDrag = {
+  kind: SurfaceKind;
+  axis: "x" | "y";
+};
+
 const validators: Array<{ value: Validator; label: string }> = [
   { value: "free_text", label: "Any text" },
   { value: "name", label: "Name" },
@@ -183,6 +199,8 @@ function pageLabel(preview: PreviewResult): string {
 
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const originalFrameRef = useRef<HTMLElement | null>(null);
+  const redactedFrameRef = useRef<HTMLElement | null>(null);
   const redactedPreviewRef = useRef<HTMLDivElement | null>(null);
   const [rules, setRules] = useState<RedactionRule[]>(defaultRules);
   const [selected, setSelected] = useState<Set<string>>(
@@ -217,6 +235,11 @@ export default function App() {
   const [manualRedactions, setManualRedactions] = useState<ManualRedaction[]>([]);
   const [redactionColor, setRedactionColor] = useState("#000000");
   const [isErasing, setIsErasing] = useState(false);
+  const [scrollDrag, setScrollDrag] = useState<ScrollDrag | null>(null);
+  const [scrollState, setScrollState] = useState<Record<SurfaceKind, ScrollState>>({
+    original: { canX: false, canY: false, left: 0, top: 0, width: 100, height: 100 },
+    redacted: { canX: false, canY: false, left: 0, top: 0, width: 100, height: 100 }
+  });
   const [logs, setLogs] = useState<string[]>([]);
   const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState("Attach PDFs to inspect available fields.");
@@ -358,6 +381,14 @@ export default function App() {
   }, [preview, selectedHitKey]);
 
   useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      updateScrollState("original", originalFrameRef.current);
+      updateScrollState("redacted", redactedFrameRef.current);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [preview, previewMode, zoom]);
+
+  useEffect(() => {
     if (!selectedPreviewFile) {
       setPreview(null);
       setPreviewStatus("Attach a PDF to preview redactions.");
@@ -490,6 +521,34 @@ export default function App() {
       x: clamp(((event.clientX - bounds.left) / bounds.width) * preview.pageWidth, 0, preview.pageWidth),
       y: clamp(((event.clientY - bounds.top) / bounds.height) * preview.pageHeight, 0, preview.pageHeight)
     };
+  }
+
+  function updateScrollState(kind: SurfaceKind, element: HTMLElement | null): void {
+    if (!element) return;
+    const canX = element.scrollWidth > element.clientWidth + 1;
+    const canY = element.scrollHeight > element.clientHeight + 1;
+    const left = canX ? (element.scrollLeft / (element.scrollWidth - element.clientWidth)) * 100 : 0;
+    const top = canY ? (element.scrollTop / (element.scrollHeight - element.clientHeight)) * 100 : 0;
+    const width = canX ? Math.max(12, (element.clientWidth / element.scrollWidth) * 100) : 100;
+    const height = canY ? Math.max(12, (element.clientHeight / element.scrollHeight) * 100) : 100;
+    setScrollState((current) => ({
+      ...current,
+      [kind]: { canX, canY, left, top, width, height }
+    }));
+  }
+
+  function scrollFrame(kind: SurfaceKind, axis: "x" | "y", event: ReactPointerEvent<HTMLDivElement>): void {
+    const element = kind === "original" ? originalFrameRef.current : redactedFrameRef.current;
+    if (!element) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (axis === "y") {
+      const ratio = clamp((event.clientY - bounds.top) / bounds.height, 0, 1);
+      element.scrollTop = ratio * (element.scrollHeight - element.clientHeight);
+    } else {
+      const ratio = clamp((event.clientX - bounds.left) / bounds.width, 0, 1);
+      element.scrollLeft = ratio * (element.scrollWidth - element.clientWidth);
+    }
+    updateScrollState(kind, element);
   }
 
   function beginManualRedaction(event: ReactPointerEvent<HTMLDivElement>): void {
@@ -721,93 +780,134 @@ export default function App() {
 
   function renderPreviewSurface(title: string, redacted: boolean) {
     if (!preview) return null;
+    const kind: SurfaceKind = redacted ? "redacted" : "original";
+    const state = scrollState[kind];
     const draftRect = dragDraft
       ? rectFromPoints(dragDraft.startX, dragDraft.startY, dragDraft.currentX, dragDraft.currentY)
       : null;
     const hits = redacted ? preview.hitsOnPage : [];
 
     return (
-      <figure className="pdf-preview">
-        <figcaption>{title}</figcaption>
-        <div
-          ref={redacted ? redactedPreviewRef : undefined}
-          className={`preview-canvas ${redacted && isDrawingManualBox ? "is-drawing" : ""}`}
-          style={{
-            width: `${preview.pageWidth * zoom}px`,
-            aspectRatio: `${preview.pageWidth} / ${preview.pageHeight}`
-          }}
-          onPointerDown={redacted ? beginManualRedaction : undefined}
-          onPointerMove={redacted ? updateManualRedaction : undefined}
-          onPointerUp={redacted ? () => {
-            if (resizeDraft) {
-              finishResize();
-            } else if (moveDraft) {
-              finishMove();
-            } else {
-              finishManualRedaction();
-            }
-          } : undefined}
-          onPointerCancel={redacted ? () => {
-            setDragDraft(null);
-            setResizeDraft(null);
-            setMoveDraft(null);
-          } : undefined}
+      <div className="pdf-preview-shell">
+        <figure
+          ref={redacted ? redactedFrameRef : originalFrameRef}
+          className="pdf-preview"
+          onScroll={(event) => updateScrollState(kind, event.currentTarget)}
         >
-          <img src={preview.originalUrl} alt={`${preview.fileName} ${title.toLowerCase()} page ${preview.pageIndex + 1}`} />
-          {hits.map((hit: RedactionHit) => {
-            const isSelected = selectedHitKey === hit.key;
-            const activeRect = resizeDraft?.hit.key === hit.key
-              ? resizeRect(hit.rect, resizeDraft.handle, resizeDraft.currentX, resizeDraft.currentY, preview.pageWidth, preview.pageHeight)
-              : moveDraft?.hit.key === hit.key
-                ? moveRect(hit.rect, moveDraft.currentX - moveDraft.startX, moveDraft.currentY - moveDraft.startY, preview.pageWidth, preview.pageHeight)
-              : hit.rect;
-            return (
-              <button
-                type="button"
-                key={hit.key}
-                className={`redaction-box ${hit.source === "auto" ? "is-auto" : "is-manual"} ${isErasing ? "is-eraser-target" : ""} ${isSelected ? "is-selected" : ""}`}
+          <figcaption>{title}</figcaption>
+          <div
+            ref={redacted ? redactedPreviewRef : undefined}
+            className={`preview-canvas ${redacted && isDrawingManualBox ? "is-drawing" : ""}`}
+            style={{
+              width: `${preview.pageWidth * zoom}px`,
+              aspectRatio: `${preview.pageWidth} / ${preview.pageHeight}`
+            }}
+            onPointerDown={redacted ? beginManualRedaction : undefined}
+            onPointerMove={redacted ? updateManualRedaction : undefined}
+            onPointerUp={redacted ? () => {
+              if (resizeDraft) {
+                finishResize();
+              } else if (moveDraft) {
+                finishMove();
+              } else {
+                finishManualRedaction();
+              }
+            } : undefined}
+            onPointerCancel={redacted ? () => {
+              setDragDraft(null);
+              setResizeDraft(null);
+              setMoveDraft(null);
+            } : undefined}
+          >
+            <img src={preview.originalUrl} alt={`${preview.fileName} ${title.toLowerCase()} page ${preview.pageIndex + 1}`} />
+            {hits.map((hit: RedactionHit) => {
+              const isSelected = selectedHitKey === hit.key;
+              const activeRect = resizeDraft?.hit.key === hit.key
+                ? resizeRect(hit.rect, resizeDraft.handle, resizeDraft.currentX, resizeDraft.currentY, preview.pageWidth, preview.pageHeight)
+                : moveDraft?.hit.key === hit.key
+                  ? moveRect(hit.rect, moveDraft.currentX - moveDraft.startX, moveDraft.currentY - moveDraft.startY, preview.pageWidth, preview.pageHeight)
+                : hit.rect;
+              return (
+                <button
+                  type="button"
+                  key={hit.key}
+                  className={`redaction-box ${hit.source === "auto" ? "is-auto" : "is-manual"} ${isErasing ? "is-eraser-target" : ""} ${isSelected ? "is-selected" : ""}`}
+                  style={{
+                    ...rectStyle(activeRect, preview.pageWidth, preview.pageHeight),
+                    "--redaction-color": hit.color
+                  } as CSSProperties}
+                  title={`${hit.reason}: ${hit.text}`}
+                  onPointerDown={(event) => beginMove(hit, event)}
+                  onPointerMove={(event) => updateManualRedaction(event as unknown as ReactPointerEvent<HTMLDivElement>)}
+                  onPointerUp={(event) => {
+                    event.stopPropagation();
+                    finishMove();
+                  }}
+                  onPointerCancel={(event) => {
+                    event.stopPropagation();
+                    setMoveDraft(null);
+                  }}
+                  onClick={() => {
+                    if (!isErasing) setSelectedHitKey(hit.key);
+                  }}
+                >
+                  <span className="redaction-fill" />
+                  {isSelected && redactionToolsEnabled && (["nw", "ne", "sw", "se"] as ResizeHandle[]).map((handle) => (
+                    <span
+                      key={handle}
+                      role="button"
+                      tabIndex={-1}
+                      className={`resize-handle resize-${handle}`}
+                      onPointerDown={(event) => beginResize(hit, handle, event)}
+                    />
+                  ))}
+                </button>
+              );
+            })}
+            {draftRect && redacted && (
+              <span
+                className="redaction-box is-draft"
                 style={{
-                  ...rectStyle(activeRect, preview.pageWidth, preview.pageHeight),
-                  backgroundColor: hit.color
-                }}
-                title={`${hit.reason}: ${hit.text}`}
-                onPointerDown={(event) => beginMove(hit, event)}
-                onPointerMove={(event) => updateManualRedaction(event as unknown as ReactPointerEvent<HTMLDivElement>)}
-                onPointerUp={(event) => {
-                  event.stopPropagation();
-                  finishMove();
-                }}
-                onPointerCancel={(event) => {
-                  event.stopPropagation();
-                  setMoveDraft(null);
-                }}
-                onClick={() => {
-                  if (!isErasing) setSelectedHitKey(hit.key);
-                }}
+                  ...rectStyle(draftRect, preview.pageWidth, preview.pageHeight),
+                  "--redaction-color": redactionColor
+                } as CSSProperties}
               >
-                {isSelected && redactionToolsEnabled && (["nw", "ne", "sw", "se"] as ResizeHandle[]).map((handle) => (
-                  <span
-                    key={handle}
-                    role="button"
-                    tabIndex={-1}
-                    className={`resize-handle resize-${handle}`}
-                    onPointerDown={(event) => beginResize(hit, handle, event)}
-                  />
-                ))}
-              </button>
-            );
-          })}
-          {draftRect && redacted && (
-            <span
-              className="redaction-box is-draft"
-              style={{
-                ...rectStyle(draftRect, preview.pageWidth, preview.pageHeight),
-                backgroundColor: redactionColor
-              }}
-            />
-          )}
+                <span className="redaction-fill" />
+              </span>
+            )}
+          </div>
+        </figure>
+        <div
+          className={`custom-scrollbar custom-scrollbar-y ${state.canY ? "is-active" : ""}`}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            setScrollDrag({ kind, axis: "y" });
+            scrollFrame(kind, "y", event);
+          }}
+          onPointerMove={(event) => {
+            if (scrollDrag?.kind === kind && scrollDrag.axis === "y") scrollFrame(kind, "y", event);
+          }}
+          onPointerUp={() => setScrollDrag(null)}
+          onPointerCancel={() => setScrollDrag(null)}
+        >
+          <span style={{ top: `${state.top}%`, height: `${state.height}%` }} />
         </div>
-      </figure>
+        <div
+          className={`custom-scrollbar custom-scrollbar-x ${state.canX ? "is-active" : ""}`}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            setScrollDrag({ kind, axis: "x" });
+            scrollFrame(kind, "x", event);
+          }}
+          onPointerMove={(event) => {
+            if (scrollDrag?.kind === kind && scrollDrag.axis === "x") scrollFrame(kind, "x", event);
+          }}
+          onPointerUp={() => setScrollDrag(null)}
+          onPointerCancel={() => setScrollDrag(null)}
+        >
+          <span style={{ left: `${state.left}%`, width: `${state.width}%` }} />
+        </div>
+      </div>
     );
   }
 
