@@ -30,6 +30,7 @@ export type ManualRedaction = {
   fileName: string;
   pageIndex: number;
   rect: Rect;
+  replacesKey?: string;
 };
 
 export type ProcessOptions = {
@@ -66,6 +67,7 @@ export type PreviewResult = {
   originalUrl: string;
   hitsOnPage: RedactionHit[];
   totalHits: number;
+  totalDetectedHits: number;
 };
 
 export type FieldAnalysis = {
@@ -610,6 +612,7 @@ export async function createPdfPreview(
 
   const safePageIndex = Math.min(Math.max(pageIndex, 0), pdf.numPages - 1);
   const spans = await extractTextSpans(pdf);
+  const allHits = detectRedactionHits(spans, rules, { ...options, ignoredHitKeys: [] }, file.name);
   const hits = detectRedactionHits(spans, rules, options, file.name);
   const page = await pdf.getPage(safePageIndex + 1);
   const viewport = page.getViewport({ scale: 1 });
@@ -624,7 +627,8 @@ export async function createPdfPreview(
     pageHeight: viewport.height,
     originalUrl: originalCanvas.toDataURL("image/png"),
     hitsOnPage,
-    totalHits: hits.length
+    totalHits: hits.length,
+    totalDetectedHits: allHits.length
   };
 }
 

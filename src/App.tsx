@@ -37,6 +37,15 @@ type DragDraft = {
   currentY: number;
 };
 
+type ResizeHandle = "nw" | "ne" | "sw" | "se";
+
+type ResizeDraft = {
+  hit: RedactionHit;
+  handle: ResizeHandle;
+  currentX: number;
+  currentY: number;
+};
+
 const validators: Array<{ value: Validator; label: string }> = [
   { value: "free_text", label: "Any text" },
   { value: "name", label: "Name" },
@@ -117,6 +126,26 @@ function rectFromPoints(startX: number, startY: number, endX: number, endY: numb
   };
 }
 
+function resizeRect(rect: Rect, handle: ResizeHandle, pointX: number, pointY: number, pageWidth: number, pageHeight: number): Rect {
+  const minSize = 8;
+  let left = rect.x;
+  let top = rect.y;
+  let right = rect.x + rect.width;
+  let bottom = rect.y + rect.height;
+
+  if (handle.includes("w")) left = clamp(pointX, 0, right - minSize);
+  if (handle.includes("e")) right = clamp(pointX, left + minSize, pageWidth);
+  if (handle.includes("n")) top = clamp(pointY, 0, bottom - minSize);
+  if (handle.includes("s")) bottom = clamp(pointY, top + minSize, pageHeight);
+
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top
+  };
+}
+
 function rectStyle(rect: Rect, pageWidth: number, pageHeight: number): CSSProperties {
   return {
     left: `${(rect.x / pageWidth) * 100}%`,
@@ -159,6 +188,7 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const [isDrawingManualBox, setIsDrawingManualBox] = useState(false);
   const [dragDraft, setDragDraft] = useState<DragDraft | null>(null);
+  const [resizeDraft, setResizeDraft] = useState<ResizeDraft | null>(null);
   const [selectedHitKey, setSelectedHitKey] = useState<string | null>(null);
   const [ignoredHitKeys, setIgnoredHitKeys] = useState<Set<string>>(() => new Set());
   const [manualRedactions, setManualRedactions] = useState<ManualRedaction[]>([]);
@@ -229,6 +259,7 @@ export default function App() {
     () => [...ignoredHitKeys].sort().join("|"),
     [ignoredHitKeys]
   );
+  const redactionToolsEnabled = previewMode !== "original";
 
   function log(message: string, details?: unknown): void {
     const line = debugLine(message, details);
@@ -283,6 +314,21 @@ export default function App() {
     setPreviewPage(0);
     setSelectedHitKey(null);
   }, [previewFileIndex]);
+
+  useEffect(() => {
+    if (previewMode === "original") {
+      setIsDrawingManualBox(false);
+      setDragDraft(null);
+      setResizeDraft(null);
+      setSelectedHitKey(null);
+    }
+  }, [previewMode]);
+
+  useEffect(() => {
+    if (selectedHitKey && preview && !preview.hitsOnPage.some((hit) => hit.key === selectedHitKey)) {
+      setSelectedHitKey(null);
+    }
+  }, [preview, selectedHitKey]);
 
   useEffect(() => {
     if (!selectedPreviewFile) {
@@ -418,7 +464,7 @@ export default function App() {
   }
 
   function beginManualRedaction(event: ReactPointerEvent<HTMLDivElement>): void {
-    if (!isDrawingManualBox || !preview || !selectedPreviewFile) return;
+    if (!redactionToolsEnabled || !isDrawingManualBox || !preview || !selectedPreviewFile) return;
     const point = pointerToPdfPoint(event);
     if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -432,10 +478,11 @@ export default function App() {
   }
 
   function updateManualRedaction(event: ReactPointerEvent<HTMLDivElement>): void {
-    if (!dragDraft) return;
+    if (!dragDraft && !resizeDraft) return;
     const point = pointerToPdfPoint(event);
     if (!point) return;
     setDragDraft((current) => current ? { ...current, currentX: point.x, currentY: point.y } : current);
+    setResizeDraft((current) => current ? { ...current, currentX: point.x, currentY: point.y } : current);
   }
 
   function finishManualRedaction(): void {
@@ -469,11 +516,78 @@ export default function App() {
     setDragDraft(null);
   }
 
+  function beginResize(hit: RedactionHit, handle: ResizeHandle, event: ReactPointerEvent<HTMLElement>): void {
+    if (!redactionToolsEnabled || !preview) return;
+    const point = pointerToPdfPoint(event as unknown as ReactPointerEvent<HTMLDivElement>);
+    if (!point) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsDrawingManualBox(false);
+    setDragDraft(null);
+    setSelectedHitKey(hit.key);
+    setResizeDraft({
+      hit,
+      handle,
+      currentX: point.x,
+      currentY: point.y
+    });
+  }
+
+  function finishResize(): void {
+    if (!resizeDraft || !preview || !selectedPreviewFile) {
+      setResizeDraft(null);
+      return;
+    }
+
+    const rect = resizeRect(
+      resizeDraft.hit.rect,
+      resizeDraft.handle,
+      resizeDraft.currentX,
+      resizeDraft.currentY,
+      preview.pageWidth,
+      preview.pageHeight
+    );
+
+    if (resizeDraft.hit.source === "manual") {
+      setManualRedactions((current) =>
+        current.map((redaction) => redaction.id === resizeDraft.hit.key ? { ...redaction, rect } : redaction)
+      );
+      setSelectedHitKey(resizeDraft.hit.key);
+    } else {
+      const replacementId = `manual:${fileId(selectedPreviewFile)}:${preview.pageIndex}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+      const redaction: ManualRedaction = {
+        id: replacementId,
+        fileId: fileId(selectedPreviewFile),
+        fileName: selectedPreviewFile.name,
+        pageIndex: preview.pageIndex,
+        rect,
+        replacesKey: resizeDraft.hit.key
+      };
+      setIgnoredHitKeys((current) => new Set([...current, resizeDraft.hit.key]));
+      setManualRedactions((current) => [...current, redaction]);
+      setSelectedHitKey(replacementId);
+    }
+    setResizeDraft(null);
+  }
+
   function removeSelectedHit(): void {
     if (!selectedHitKey) return;
     const selectedHit = preview?.hitsOnPage.find((hit) => hit.key === selectedHitKey);
+    if (!selectedHit) {
+      setSelectedHitKey(null);
+      return;
+    }
     if (selectedHit?.source === "manual") {
       setManualRedactions((current) => current.filter((redaction) => redaction.id !== selectedHitKey));
+      const manual = manualRedactions.find((redaction) => redaction.id === selectedHitKey);
+      const replacedKey = manual?.replacesKey;
+      if (replacedKey) {
+        setIgnoredHitKeys((current) => {
+          const next = new Set(current);
+          next.delete(replacedKey);
+          return next;
+        });
+      }
     } else {
       setIgnoredHitKeys((current) => new Set([...current, selectedHitKey]));
     }
@@ -499,23 +613,48 @@ export default function App() {
           }}
           onPointerDown={redacted ? beginManualRedaction : undefined}
           onPointerMove={redacted ? updateManualRedaction : undefined}
-          onPointerUp={redacted ? finishManualRedaction : undefined}
-          onPointerCancel={redacted ? () => setDragDraft(null) : undefined}
+          onPointerUp={redacted ? () => {
+            if (resizeDraft) {
+              finishResize();
+            } else {
+              finishManualRedaction();
+            }
+          } : undefined}
+          onPointerCancel={redacted ? () => {
+            setDragDraft(null);
+            setResizeDraft(null);
+          } : undefined}
         >
           <img src={preview.originalUrl} alt={`${preview.fileName} ${title.toLowerCase()} page ${preview.pageIndex + 1}`} />
-          {hits.map((hit: RedactionHit) => (
-            <button
-              type="button"
-              key={hit.key}
-              className={`redaction-box ${selectedHitKey === hit.key ? "is-selected" : ""}`}
-              style={rectStyle(hit.rect, preview.pageWidth, preview.pageHeight)}
-              title={`${hit.reason}: ${hit.text}`}
-              onPointerDown={(event) => {
-                event.stopPropagation();
-              }}
-              onClick={() => setSelectedHitKey(hit.key)}
-            />
-          ))}
+          {hits.map((hit: RedactionHit) => {
+            const isSelected = selectedHitKey === hit.key;
+            const activeRect = resizeDraft?.hit.key === hit.key
+              ? resizeRect(hit.rect, resizeDraft.handle, resizeDraft.currentX, resizeDraft.currentY, preview.pageWidth, preview.pageHeight)
+              : hit.rect;
+            return (
+              <button
+                type="button"
+                key={hit.key}
+                className={`redaction-box ${isSelected ? "is-selected" : ""}`}
+                style={rectStyle(activeRect, preview.pageWidth, preview.pageHeight)}
+                title={`${hit.reason}: ${hit.text}`}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onClick={() => setSelectedHitKey(hit.key)}
+              >
+                {isSelected && redactionToolsEnabled && (["nw", "ne", "sw", "se"] as ResizeHandle[]).map((handle) => (
+                  <span
+                    key={handle}
+                    role="button"
+                    tabIndex={-1}
+                    className={`resize-handle resize-${handle}`}
+                    onPointerDown={(event) => beginResize(hit, handle, event)}
+                  />
+                ))}
+              </button>
+            );
+          })}
           {draftRect && redacted && (
             <span
               className="redaction-box is-draft"
@@ -763,44 +902,35 @@ export default function App() {
             <h2>Live Preview</h2>
             <p>{previewStatus}</p>
           </div>
-          <div className="button-row">
-            {files.length > 1 && (
-              <select
-                className="document-select"
-                value={previewFileIndex}
-                disabled={isPreviewLoading}
-                onChange={(event) => setPreviewFileIndex(Number(event.target.value))}
-              >
-                {files.map((file, index) => (
-                  <option key={`${file.name}-${index}`} value={index}>
-                    {file.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            <button
-              type="button"
-              disabled={!preview || preview.pageIndex === 0 || isPreviewLoading}
-              onClick={() => setPreviewPage((page) => Math.max(0, page - 1))}
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              disabled={!preview || preview.pageIndex >= preview.totalPages - 1 || isPreviewLoading}
-              onClick={() => setPreviewPage((page) => page + 1)}
-            >
-              Next
-            </button>
-          </div>
         </div>
 
         {preview ? (
           <>
             <div className="preview-meta">
-              <span>{isPreviewLoading ? "Updating preview..." : `${preview.totalHits} total redaction box(es)`}</span>
+              <span>
+                {isPreviewLoading
+                  ? "Updating preview..."
+                  : `${preview.totalHits} active / ${preview.totalDetectedHits} detected redaction box(es)`}
+              </span>
               <span>{files.length > 1 ? `Document ${previewFileIndex + 1} of ${files.length}` : "Single document"}</span>
             </div>
+            {files.length > 1 && (
+              <label className="document-picker">
+                Document
+                <select
+                  className="document-select"
+                  value={previewFileIndex}
+                  disabled={isPreviewLoading}
+                  onChange={(event) => setPreviewFileIndex(Number(event.target.value))}
+                >
+                  {files.map((file, index) => (
+                    <option key={`${file.name}-${index}`} value={index}>
+                      {file.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div className="preview-tools">
               <div className="segmented-control">
                 <button
@@ -841,6 +971,7 @@ export default function App() {
               <button
                 type="button"
                 className={isDrawingManualBox ? "is-active" : ""}
+                disabled={!redactionToolsEnabled}
                 onClick={() => {
                   setIsDrawingManualBox((value) => !value);
                   setDragDraft(null);
@@ -848,13 +979,29 @@ export default function App() {
               >
                 Add box
               </button>
-              <button type="button" disabled={!selectedHitKey} onClick={removeSelectedHit}>
+              <button type="button" disabled={!redactionToolsEnabled || !selectedHitKey} onClick={removeSelectedHit}>
                 Restore selected
               </button>
             </div>
             <div className={`preview-grid preview-grid-${previewMode}`}>
               {(previewMode === "split" || previewMode === "original") && renderPreviewSurface("Original", false)}
               {(previewMode === "split" || previewMode === "redacted") && renderPreviewSurface("Redacted", true)}
+            </div>
+            <div className="preview-page-nav">
+              <button
+                type="button"
+                disabled={!preview || preview.pageIndex === 0 || isPreviewLoading}
+                onClick={() => setPreviewPage((page) => Math.max(0, page - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                disabled={!preview || preview.pageIndex >= preview.totalPages - 1 || isPreviewLoading}
+                onClick={() => setPreviewPage((page) => page + 1)}
+              >
+                Next
+              </button>
             </div>
           </>
         ) : (
