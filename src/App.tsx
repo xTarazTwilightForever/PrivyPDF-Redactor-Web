@@ -738,10 +738,6 @@ export default function App() {
             Files stay in your browser; nothing is uploaded to a server.
           </p>
         </div>
-        <div className="privacy-badge">
-          <strong>Local</strong>
-          <span>No backend upload</span>
-        </div>
       </header>
 
       <section className="panel file-panel">
@@ -963,16 +959,16 @@ export default function App() {
                 </button>
               </div>
               <div className="zoom-control">
-                <button type="button" onClick={() => setZoom((value) => clamp(value - 0.15, 0.6, 2.4))}>-</button>
+                <button type="button" onClick={() => setZoom((value) => clamp(value - 0.15, 0.6, 4))}>-</button>
                 <input
                   type="range"
                   min={0.6}
-                  max={2.4}
+                  max={4}
                   step={0.05}
                   value={zoom}
                   onChange={(event) => setZoom(Number(event.target.value))}
                 />
-                <button type="button" onClick={() => setZoom((value) => clamp(value + 0.15, 0.6, 2.4))}>+</button>
+                <button type="button" onClick={() => setZoom((value) => clamp(value + 0.15, 0.6, 4))}>+</button>
                 <span>{Math.round(zoom * 100)}%</span>
               </div>
               <button
@@ -1018,10 +1014,11 @@ export default function App() {
             <div className="preview-page-nav">
               <button
                 type="button"
+                className="page-nav-button"
                 disabled={!preview || preview.pageIndex === 0 || isPreviewLoading}
                 onClick={() => setPreviewPage((page) => Math.max(0, page - 1))}
               >
-                Previous
+                ← Previous
               </button>
               <label className="page-picker">
                 Page
@@ -1043,10 +1040,11 @@ export default function App() {
               {preview.pageIndex < preview.totalPages - 1 && (
                 <button
                   type="button"
+                  className="page-nav-button"
                   disabled={isPreviewLoading}
                   onClick={() => setPreviewPage((page) => page + 1)}
                 >
-                  {pageLabel(preview)}
+                  {pageLabel(preview)} →
                 </button>
               )}
             </div>
