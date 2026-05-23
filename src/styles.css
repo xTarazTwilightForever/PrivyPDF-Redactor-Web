@@ -278,11 +278,37 @@ select:focus-visible {
 
 .pdf-preview {
   min-width: 0;
+  max-height: 760px;
   margin: 0;
-  overflow: auto;
+  overflow: scroll;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #eef2f7;
+  background:
+    linear-gradient(90deg, rgba(23, 92, 211, 0.08), transparent 18px) left top / 18px 100% no-repeat,
+    linear-gradient(270deg, rgba(23, 92, 211, 0.08), transparent 18px) right top / 18px 100% no-repeat,
+    #eef2f7;
+  scrollbar-color: #8aa4d6 #e7ecf5;
+  scrollbar-width: thin;
+}
+
+.pdf-preview::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.pdf-preview::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: #e7ecf5;
+}
+
+.pdf-preview::-webkit-scrollbar-thumb {
+  border: 3px solid #e7ecf5;
+  border-radius: 999px;
+  background: #8aa4d6;
+}
+
+.pdf-preview::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
 }
 
 .pdf-preview figcaption {
@@ -327,6 +353,7 @@ select:focus-visible {
   opacity: 0.88;
   transform: scale(1);
   transform-origin: center;
+  cursor: move;
 }
 
 .redaction-box:hover,
@@ -362,6 +389,14 @@ select:focus-visible {
   background: rgba(0, 0, 0, 0.72);
   outline: 2px dashed var(--accent);
   outline-offset: 1px;
+}
+
+.redaction-box.is-eraser-target {
+  cursor: not-allowed;
+}
+
+.redaction-box.is-eraser-target:hover {
+  outline-color: var(--danger);
 }
 
 .resize-handle {
@@ -505,6 +540,29 @@ select:focus-visible {
   min-width: 44px;
   color: var(--muted);
   font-weight: 800;
+}
+
+.color-control {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  align-items: center;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 10px;
+  background: #fff;
+  font-weight: 800;
+}
+
+.color-control input {
+  width: 34px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
 .preview-page-nav {

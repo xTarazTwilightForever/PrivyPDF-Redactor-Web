@@ -20,9 +20,10 @@ export type RedactionHit = {
   reason: string;
   text: string;
   source: "auto" | "manual";
+  color: string;
 };
 
-type RawRedactionHit = Omit<RedactionHit, "key" | "source">;
+type RawRedactionHit = Omit<RedactionHit, "key" | "source" | "color">;
 
 export type ManualRedaction = {
   id: string;
@@ -30,6 +31,7 @@ export type ManualRedaction = {
   fileName: string;
   pageIndex: number;
   rect: Rect;
+  color: string;
   replacesKey?: string;
 };
 
@@ -40,6 +42,7 @@ export type ProcessOptions = {
   allRegex: boolean;
   padding: number;
   fileId?: string;
+  redactionColor?: string;
   ignoredHitKeys?: string[];
   manualRedactions?: ManualRedaction[];
   debug?: DebugLogger;
@@ -463,11 +466,12 @@ export function redactionHitKey(hit: Pick<RedactionHit, "pageIndex" | "rect" | "
   ].join(":");
 }
 
-function withHitKeys(hits: RawRedactionHit[]): RedactionHit[] {
+function withHitKeys(hits: RawRedactionHit[], color: string): RedactionHit[] {
   return hits.map((hit) => ({
     ...hit,
     key: redactionHitKey(hit),
-    source: "auto"
+    source: "auto",
+    color
   }));
 }
 
@@ -487,7 +491,8 @@ function manualHit(redaction: ManualRedaction): RedactionHit {
     rect: redaction.rect,
     reason: "manual",
     text: "Manual redaction",
-    source: "manual"
+    source: "manual",
+    color: redaction.color
   };
 }
 
@@ -498,11 +503,12 @@ function detectRedactionHits(
   fileName: string
 ): RedactionHit[] {
   const ignored = new Set(options.ignoredHitKeys ?? []);
+  const color = options.redactionColor ?? "#000000";
   const autoHits = withHitKeys([
     ...detectLabelValues(spans, rules, options),
     ...detectGlobalPatterns(spans, rules, options),
     ...detectCustomValues(spans, options)
-  ]).filter((hit) => !ignored.has(hit.key));
+  ], color).filter((hit) => !ignored.has(hit.key));
   const manualHits = (options.manualRedactions ?? [])
     .filter((redaction) => options.fileId ? redaction.fileId === options.fileId : redaction.fileName === fileName)
     .map(manualHit);
@@ -527,8 +533,8 @@ async function renderPdfPage(
 
   if (hits.length > 0) {
     context.save();
-    context.fillStyle = "#000";
     for (const hit of hits.filter((item) => item.pageIndex === pageIndex)) {
+      context.fillStyle = hit.color;
       context.fillRect(
         hit.rect.x * renderScale,
         hit.rect.y * renderScale,
